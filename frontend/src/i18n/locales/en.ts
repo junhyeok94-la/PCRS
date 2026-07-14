@@ -5,6 +5,7 @@ const en = {
   "header.guest": "Guest (Login / Sign Up)",
   "header.guest_short": "Guest",
   "header.guest_feedback": "Temp. Feedback Active",
+  "header.login_short": "Login",
   "header.logout": "Log Out",
   "header.profile": "Personalized Preset",
 
@@ -103,6 +104,8 @@ const en = {
   "bodyfat.overweight_desc_f": "Subcutaneous fat accumulation prominent on hips and lower belly.",
 
   // Feedback toast
+  "weather.alert": "Severe Weather Alerts",
+  "activity.suitability": "Outdoor Activity Suitability",
   "toast.feedback_ok": "Feedback received. Updating recommendations.",
   "toast.feedback_fail": "Failed to send feedback. Please try again later.",
   "toast.network_error": "A network error occurred.",

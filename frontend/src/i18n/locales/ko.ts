@@ -5,6 +5,7 @@ const ko = {
   "header.guest": "게스트 (로그인/가입)",
   "header.guest_short": "게스트",
   "header.guest_feedback": "임시 피드백 활성",
+  "header.login_short": "로그인",
   "header.logout": "로그아웃",
   "header.profile": "개인화 필셋",
 
@@ -103,6 +104,8 @@ const ko = {
   "bodyfat.overweight_desc_f": "엉덩이와 아랫배 쪽에 피하지방 축적이 두드러지며 라인이 둥근 체형.",
 
   // 피드백 토스트
+  "weather.alert": "기상 재해 특보 알림",
+  "activity.suitability": "활동별 야외 적합 지수",
   "toast.feedback_ok": "피드백이 반영되었습니다. 추천을 다시 업데이트합니다.",
   "toast.feedback_fail": "피드백 전송에 실패했습니다. 잠시 후 다시 시도하세요.",
   "toast.network_error": "네트워크 오류가 발생했습니다.",

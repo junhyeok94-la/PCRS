@@ -1,31 +1,36 @@
 import os
 import math
+import datetime
+from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from mangum import Mangum
 from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
+from contextlib import asynccontextmanager
+
+# APScheduler imports
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Import database and weather clients
 from db_client import (
-    get_region_by_name,
-    get_historical_weather,
-    get_all_regions,
+    get_location_by_name,
+    get_all_locations,
+    get_all_location_coordinates,
+    get_weather_forecast_cache,
+    upsert_weather_forecast_cache,
     insert_user_feedback,
-    get_user_clo_bias
+    get_user_clo_bias,
+    get_user_profile,
+    upsert_user_profile,
+    upsert_historical_weather_fact
 )
-from weather_client import get_realtime_weather
-
-# UTCI 순수 Python 구현 (numba/DLL 의존성 없음)
+from weather_client import get_weather_forecast_data, fetch_weather_forecast_from_api
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
-# RLS 정책 또는 DB 쓰기 실패 시 피드백을 임시로 유지하기 위한 로컬 인메모리 캐시
+# ─────────────────────────────────────────────
+# 1. 로컬 피드백 폴백 캐시
+# ─────────────────────────────────────────────
 LOCAL_FEEDBACK_CACHE = {}
 
-# ─────────────────────────────────────────────
-# 1. 로컬 폴백 헬퍼
-# ─────────────────────────────────────────────
 def get_user_clo_bias_with_fallback(user_id: str) -> float:
     db_bias = get_user_clo_bias(user_id) or 0.0
     local_logs = LOCAL_FEEDBACK_CACHE.get(user_id, [])
@@ -39,14 +44,151 @@ def get_user_clo_bias_with_fallback(user_id: str) -> float:
             total_bias += 0.1
     return round(max(-0.3, min(0.3, total_bias)), 2)
 
+# ─────────────────────────────────────────────
+# 2. Haversine 거리 계산 함수
+# ─────────────────────────────────────────────
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """두 위경도 사이의 거리를 km 단위로 구합니다."""
+    R = 6371.0  # 지구 반지름 (km)
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) ** 2 + 
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * (math.sin(d_lon / 2) ** 2))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 # ─────────────────────────────────────────────
-# 2. FastAPI 앱 초기화
+# 3. 정기 배치 스케줄러 (APScheduler) 태스크 정의
+# ─────────────────────────────────────────────
+def run_weather_collect_batch():
+    """
+    3시간 주기 전국 거점 순회 데이터 수집 스케줄러
+    - location_dimension의 모든 거점 순회
+    - Open-Meteo API 호출하여 예보 취득
+    - 24시간 전체 예보에 대해 UTCI 선계산 수행 후 weather_forecast_cache에 적재
+    """
+    print(f"⏰ [Batch] Starting weather collect and UTCI pre-calculation batch task: {datetime.datetime.now()}")
+    locations = get_all_location_coordinates()
+    if not locations:
+        print("⚠️ [Batch] No location coordinates found in location_dimension.")
+        return
+        
+    today_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
+    
+    # 동기식 헬퍼 함수로 Open-Meteo 호출
+    import asyncio
+    
+    async def process_location(loc):
+        loc_id = loc["id"]
+        lat = float(loc["latitude"])
+        lon = float(loc["longitude"])
+        
+        # 1. Open-Meteo API에서 기상 데이터 긁어오기
+        hourly_raw = await fetch_weather_forecast_from_api(lat, lon)
+        if not hourly_raw:
+            print(f"⚠️ [Batch] Failed to fetch weather for {loc['sido']} {loc['sigungu']}")
+            return
+            
+        # 2. 24시간 시간별 기온, 습도, 풍속, 일사량 데이터를 바탕으로 UTCI 선계산
+        temperatures = hourly_raw.get("temperature_2m", [])
+        humidities = hourly_raw.get("relativehumidity_2m", [])
+        wind_speeds = hourly_raw.get("windspeed_10m", [])
+        radiations = hourly_raw.get("shortwave_radiation", [])
+        
+        utci_list = []
+        for i in range(len(temperatures)):
+            tdb = temperatures[i]
+            rh = humidities[i]
+            v10 = wind_speeds[i]
+            solar_rad = radiations[i]
+            
+            # 실외 기준: 10m 풍속 및 일사량 기반 Tmrt 연산
+            # Tmrt = tdb + 0.0014 * shortwave_radiation
+            tmrt = round(tdb + 0.0014 * solar_rad, 1)
+            
+            # UTCI 계산 (최소 풍속 0.5m/s 보정은 calc_utci_raw 내부 처리)
+            try:
+                utci_val = round(calc_utci_raw(tdb=tdb, tr=tmrt, v=v10, rh=rh), 2)
+            except Exception as e:
+                utci_val = round(tdb + (tmrt - tdb) * 0.35 - max(0.0, v10 - 0.5) * 2.0, 2)
+                
+            utci_list.append(utci_val)
+            
+        # 계산 결과 리스트를 JSON 구조에 보존
+        hourly_raw["utci"] = utci_list
+        
+        # 3. DB 캐시에 Upsert
+        upsert_weather_forecast_cache(
+            location_id=loc_id,
+            date_str=today_str,
+            hourly_data=hourly_raw
+        )
+        
+        # 4. 시간대별(24h)로 개별 날씨 및 산출된 UTCI를 historical_weather_fact 테이블에 Staging 요약 적재
+        time_strings = hourly_raw.get("time", [])
+        for idx in range(min(24, len(temperatures))):
+            try:
+                # ISO 시간 문자열 파싱 (예: "2026-07-14T00:00" -> 날짜: "2026-07-14", 시간: 0)
+                t_str = time_strings[idx]
+                date_part, time_part = t_str.split("T")
+                hour_part = int(time_part.split(":")[0])
+                
+                upsert_historical_weather_fact(
+                    location_id=loc_id,
+                    weather_date=date_part,
+                    hour=hour_part,
+                    temp=temperatures[idx],
+                    hum=humidities[idx],
+                    wind=wind_speeds[idx],
+                    solar=radiations[idx],
+                    utci=utci_list[idx]
+                )
+            except Exception as ex:
+                print(f"⚠️ [Batch] Failed to insert historical fact at index {idx} for {loc['sigungu']}: {ex}")
+                
+        print(f"✅ [Batch] Successfully calculated, cached, and staged historical weather facts for {loc['sido']} {loc['sigungu']}")
+
+
+    # 비동기 함수 실행 처리
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    for loc in locations:
+        try:
+            loop.run_until_complete(process_location(loc))
+        except Exception as e:
+            print(f"❌ [Batch] Error processing location {loc.get('sigungu')}: {e}")
+    loop.close()
+    print("⏰ [Batch] Weather collection batch task finished.")
+
+# ─────────────────────────────────────────────
+# 4. FastAPI 라이프사이클 이벤트 (스케줄러 설정)
+# ─────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 스타트업 시 배치 스케줄러 등록
+    scheduler = BackgroundScheduler()
+    # 3시간마다 백그라운드 크론 실행 설정
+    scheduler.add_job(run_weather_collect_batch, 'interval', hours=3, id='weather_collect_job')
+    scheduler.start()
+    print("🚀 Background scheduler started. Weather collect batch registered (every 3 hours).")
+    
+    # 서버 기동 시 최초 1회 즉시 실행하여 캐시 확보 (비동기 스레드 실행 방해 없이 백그라운드 실행)
+    import threading
+    threading.Thread(target=run_weather_collect_batch, daemon=True).start()
+    
+    yield
+    # 셧다운 시 스케줄러 중단
+    scheduler.shutdown()
+    print("🛑 Background scheduler stopped.")
+
+# ─────────────────────────────────────────────
+# 5. FastAPI 앱 초기화
 # ─────────────────────────────────────────────
 app = FastAPI(
-    title="Personalized Clothing Recommendation API",
-    description="API for calculating UTCI-based thermal comfort and recommendations",
-    version="3.0.0"
+    title="Personalized Clothing Recommendation API (PCRS)",
+    description="API for calculating UTCI-based public thermal comfort and PMV/SET* individual nudge system",
+    version="3.2.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -57,147 +199,101 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ─────────────────────────────────────────────
-# 3. Pydantic 모델
+# 6. Pydantic 모델
 # ─────────────────────────────────────────────
 class Profile(BaseModel):
     user_id: Optional[str] = "default_user"
     height: float             # cm
     weight: float             # kg
-    age: Optional[int] = 30   # 나이 (신설)
+    age: Optional[int] = 30   # 나이
     body_fat: Optional[float] = None  # 체지방률 %
     gender: str               # male | female
     environment: Optional[str] = "outdoor"  # indoor | outdoor
-    activity_level: Optional[str] = "walking"  # sedentary | walking | jogging
-
+    activity_level: Optional[str] = "walking"  # sedentary | walking | cycling | running
 
 class FeedbackRequest(BaseModel):
     user_id: str = "default_user"
     feedback_type: str
     utci_calculated: float = 0.0
-    pmv_calculated: float = 0.0   # 하위 호환
     temperature: float
     clo_applied: float
 
+class UserProfileRequest(BaseModel):
+    user_id: str
+    height: float
+    weight: float
+    age: int
+    body_fat: Optional[float] = None
+    gender: str
+    environment: str
+    activity_level: str
 
 class RecommendationRequest(BaseModel):
     profile: Profile
-    sido: str = "서울특별시"
-    sigungu: str = "강남구"
+    latitude: float
+    longitude: float
     selected_hour: Optional[int] = None
     lang: Optional[str] = "ko"  # ko | en | ja
 
-
 # ─────────────────────────────────────────────
-# 4. 개인화 생체 변수 환산 함수
+# 7. 개인화 생체 변수 및 오프셋 산출 헬퍼
 # ─────────────────────────────────────────────
 def compute_dubois_bsa(weight_kg: float, height_cm: float) -> float:
-    """
-    DuBois & DuBois 체표면적(Body Surface Area) 공식
-    AD = 0.007184 × W^0.425 × H^0.725 [m²]
-    """
+    """DuBois & DuBois 체표면적(Body Surface Area) 공식"""
     return round(0.007184 * (weight_kg ** 0.425) * (height_cm ** 0.725), 4)
 
-
 def compute_age_sensitivity_offset(age: Optional[int]) -> float:
-    """
-    나이 기반 열감 민감도 오프셋 (UTCI 보정용, 단위: °C 상당)
-
-    생리학적 근거:
-    - 고령자(65세+)는 혈관 수축 반응 감소로 추위를 늦게 감지 → 추위에 실질적으로 더 취약
-      실질 체감은 더 춥게 느끼므로 UTCI 값을 낮게 보정 (-1.5 ∼ -2.5°C)
-    - 10세 미만 소아는 체표면적 대비 열손실이 크므로 추위에 더 취약 → 음수 오프셋
-    - 30∼50세 성인 기준(0)
-    """
+    """나이 기반 열감 민감도 오프셋 (UTCI 보정용, 단위: °C 상당)"""
     if age is None:
         return 0.0
     if age < 10:
-        return -2.0
+        return -2.0  # 소아
     elif age < 18:
         return -1.0
     elif age < 30:
         return -0.5
     elif age < 50:
-        return 0.0
+        return 0.0   # 기준 성인
     elif age < 65:
         return -0.5
     else:
-        return -2.0  # 고령자: 열조절 기능 저하
-
+        return -2.0  # 고령자
 
 def compute_fat_sensitivity_offset(gender: str, body_fat: Optional[float]) -> float:
-    """
-    체지방률 기반 열감 오프셋 (UTCI 보정용, 단위: °C 상당)
-
-    생리학적 근거:
-    - 체지방이 높을수록 절연 효과로 더위를 늦게/추위를 일찍 느낌
-    - 고체지방(남 >25%, 여 >32%)이면 더위에 더 민감하게 보정 (+오프셋)
-    - 저체지방이면 추위에 민감 (−오프셋)
-    """
+    """체지방률 기반 열감 오프셋 (UTCI 보정용, 단위: °C 상당)"""
     if body_fat is None:
         return 0.0
-
     high_threshold = 25.0 if gender == "male" else 32.0
     low_threshold = 12.0 if gender == "male" else 18.0
-
     if body_fat > high_threshold + 10:
-        return 1.5   # 고도 비만: 더위에 매우 민감
+        return 1.5   # 고도 비만
     elif body_fat > high_threshold:
-        return 0.8   # 과체중: 더위에 다소 민감
+        return 0.8   # 과체중
     elif body_fat < low_threshold:
-        return -1.0  # 저체지방: 추위에 민감 (절연층 부족)
+        return -1.0  # 저체지방
     else:
         return 0.0
 
-
-def compute_met_personalized(
-    gender: str,
-    body_fat: Optional[float],
-    activity_level: str
-) -> float:
-    """
-    개인화 대사량(MET) 산출
-
-    활동 수준별 기준 MET (ASHRAE 기반):
-    - sedentary:  1.0 Met (앉아서 가만히)
-    - walking:    2.0 Met (평지 걷기 4km/h)
-    - jogging:    3.5 Met (가볍게 조깅)
-
-    체지방·성별 보정:
-    - 체지방률이 높을수록 대사 활성 조직(근육)이 적어 MET 감소
-    """
-    activity_met = {"sedentary": 1.0, "walking": 2.0, "jogging": 3.5}
+def compute_met_personalized(gender: str, body_fat: Optional[float], activity_level: str) -> float:
+    """개인화 대사량(MET) 산출"""
+    activity_met = {
+        "sedentary": 1.0, 
+        "walking": 2.0, 
+        "cycling": 4.0, 
+        "running": 6.0
+    }
     base_met = activity_met.get(activity_level, 2.0)
-
-    # 성별 기초 보정
     if gender == "female":
-        base_met *= 0.92  # 여성 평균 기초대사량 약 8% 낮음
-
-    # 체지방 보정
+        base_met *= 0.92
     if body_fat is not None:
         high_fat_threshold = 25.0 if gender == "male" else 32.0
         if body_fat > high_fat_threshold:
-            base_met -= 0.1  # 고체지방률: 대사 활성 조직 비중 감소
-
+            base_met -= 0.1
     return round(max(0.8, base_met), 2)
 
-
 def compute_clo_from_utci(utci_val: float, gender: str) -> float:
-    """
-    UTCI 기반 착의 단열계수(CLO) 추정
-
-    UTCI 9단계 기준 (WHO/ISO):
-    - > 46°C : 극도의 열 스트레스 → 최소 착의
-    - 38~46°C: 매우 강한 열 스트레스
-    - 32~38°C: 강한 열 스트레스
-    - 26~32°C: 보통 열 스트레스
-    - 9~26°C : 열적 쾌적
-    - 0~9°C  : 약간 추운 스트레스
-    - -13~0°C: 보통 추운 스트레스
-    - -27∼-13: 강한 추운 스트레스
-    - < -27°C: 극도의 추운 스트레스
-    """
+    """UTCI 기반 착의 단열계수(CLO) 추정"""
     if utci_val > 46:
         base_clo = 0.15
     elif utci_val > 38:
@@ -216,51 +312,21 @@ def compute_clo_from_utci(utci_val: float, gender: str) -> float:
         base_clo = 1.5
     else:
         base_clo = 2.0
-
     if gender == "female":
         base_clo = round(base_clo * 0.92, 2)
-
     return round(max(0.1, base_clo), 2)
 
-
-def estimate_tmrt(tdb: float, is_outdoor: bool, selected_hour: Optional[int]) -> float:
-    """
-    평균 복사 온도(Tmrt) 추정
-
-    실내: Tmrt ≈ 공기온도 (복사 교환 최소)
-    실외: 시간대·계절 기반 일사량으로 Tmrt 가산
-    - 태양이 높이 뜨는 오전 10시~오후 3시는 최대 +18°C 가산
-    - 야간/새벽은 오히려 하늘 복사 냉각으로 -2°C 보정
-    """
-    if not is_outdoor:
-        return tdb
-
-    hour = selected_hour if selected_hour is not None else datetime.now().hour
-
-    # 시간대별 일사 가산량 (°C, 여름 기준 맑은 날 추정)
-    solar_addition_by_hour = {
-        0: -2, 1: -2, 2: -2, 3: -2, 4: -1, 5: 0,
-        6: 3,  7: 7,  8: 11, 9: 15, 10: 17, 11: 18,
-        12: 18, 13: 17, 14: 16, 15: 14, 16: 11, 17: 8,
-        18: 5, 19: 2,  20: 0, 21: -1, 22: -2, 23: -2
-    }
-
-    solar_delta = solar_addition_by_hour.get(hour, 5)
-    return round(tdb + solar_delta, 1)
-
-
 # ─────────────────────────────────────────────
-# 5. API 엔드포인트
+# 8. API 엔드포인트
 # ─────────────────────────────────────────────
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "Personalized Clothing Recommendation API v3.0 (UTCI) is running."}
-
+    return {"status": "ok", "message": "PCRS API v3.2 (Open-Meteo & Individual Nudge) is running."}
 
 @app.get("/api/v1/regions")
 def get_regions():
-    """region_dimension 테이블의 sido/sigungu 목록을 반환합니다."""
-    regions = get_all_regions()
+    """location_dimension 테이블의 sido/sigungu 목록을 반환합니다."""
+    regions = get_all_locations()
     grouped: dict = {}
     for r in regions:
         sido = r["sido"]
@@ -270,47 +336,12 @@ def get_regions():
         grouped[sido].append(sigungu)
 
     if not grouped:
-        print("⚠️ Supabase region_dimension table is empty. Returning local mock regions.")
+        print("⚠️ Supabase location_dimension is empty. Returning fallback regions.")
         grouped = {
-            "서울특별시": ["강남구", "서초구", "송파구", "마포구", "종로구"],
-            "경기도": ["수원시", "성남시", "안양시", "고양시"],
-            "부산광역시": ["해운대구", "수영구", "사하구", "중구"]
+            "서울특별시": ["강남구", "서초구", "송파구", "마포구", "종로구", "영등포구"],
+            "경기도": ["수원시", "성남시"]
         }
     return {"regions": grouped}
-
-
-@app.get("/api/v1/weather/realtime")
-async def get_realtime_weather_api(
-    sido: str = Query(..., description="시도 이름"),
-    sigungu: str = Query(..., description="시군구 이름")
-):
-    region = get_region_by_name(sido, sigungu)
-    if not region:
-        raise HTTPException(status_code=404, detail="지정된 지역 정보가 region_dimension에 없습니다.")
-    weather = await get_realtime_weather(region["id"], region["station_id"])
-    return {"region": region, "weather": weather}
-
-
-@app.get("/api/v1/weather/historical")
-def get_historical_weather_api(
-    sido: str = Query(..., description="시도 이름"),
-    sigungu: str = Query(..., description="시군구 이름"),
-    month: int = Query(..., description="월 (1~12)", ge=1, le=12),
-    hour: int = Query(..., description="시간 (0~23)", ge=0, le=23)
-):
-    region = get_region_by_name(sido, sigungu)
-    if not region:
-        raise HTTPException(status_code=404, detail="지정된 지역 정보가 region_dimension에 없습니다.")
-    historical = get_historical_weather(region["id"], month, hour)
-    if not historical:
-        return {
-            "region": region, "month": month, "hour": hour,
-            "avg_temp": 30.5, "avg_humidity": 72.0, "avg_pmv": 2.1,
-            "source": "fallback_mock"
-        }
-    historical["source"] = "db"
-    return {"region": region, "historical": historical}
-
 
 @app.post("/api/v1/feedback")
 def post_feedback(payload: FeedbackRequest):
@@ -318,7 +349,7 @@ def post_feedback(payload: FeedbackRequest):
     res = insert_user_feedback(
         user_id=payload.user_id,
         feedback_type=payload.feedback_type,
-        pmv=payload.utci_calculated,   # UTCI 값을 pmv 컬럼에 저장 (스키마 재사용)
+        utci=payload.utci_calculated,
         temp=payload.temperature,
         clo=payload.clo_applied
     )
@@ -335,113 +366,142 @@ def post_feedback(payload: FeedbackRequest):
         "new_bias": new_bias
     }
 
+@app.get("/api/v1/profile")
+def get_profile_endpoint(user_id: str = Query(..., description="조회할 사용자 고유 ID")):
+    """사용자 개인 신체 설정 조회"""
+    profile = get_user_profile(user_id)
+    if not profile:
+        # 정보가 없을 경우 404 대신 클라이언트 편의를 위해 디폴트 신체 프로필 사양 반환
+        return {
+            "status": "not_found",
+            "profile": {
+                "user_id": user_id,
+                "height": 171.0,
+                "weight": 60.0,
+                "age": 30,
+                "body_fat": 22.0,
+                "gender": "female",
+                "environment": "outdoor",
+                "activity_level": "walking"
+            }
+        }
+    return {"status": "ok", "profile": profile}
+
+@app.post("/api/v1/profile")
+def post_profile_endpoint(payload: UserProfileRequest):
+    """사용자 개인 신체 설정 저장 (Upsert)"""
+    res = upsert_user_profile(
+        user_id=payload.user_id,
+        profile_data={
+            "height": payload.height,
+            "weight": payload.weight,
+            "age": payload.age,
+            "body_fat": payload.body_fat,
+            "gender": payload.gender,
+            "environment": payload.environment,
+            "activity_level": payload.activity_level
+        }
+    )
+    if not res:
+        raise HTTPException(status_code=500, detail="프로필 정보 저장에 실패했습니다.")
+    return {"status": "ok", "message": "프로필 정보가 저장되었습니다.", "profile": res}
+
+
 
 @app.post("/api/v1/recommend")
 async def get_recommendation(payload: RecommendationRequest):
     """
-    UTCI 기반 개인화 열쾌적도 계산 및 의복 추천 API (v3.0)
+    Haversine 매핑 및 개인화 넛지 시스템을 갖춘 핵심 추천 API
     """
     profile = payload.profile
-    sido = payload.sido
-    sigungu = payload.sigungu
+    lat_user = payload.latitude
+    lon_user = payload.longitude
     selected_hour = payload.selected_hour
     lang = (payload.lang or "ko").lower()
     if lang not in ("ko", "en", "ja"):
         lang = "ko"
 
-    # ── 1. 지역 디멘전 조회 ──────────────────────────────
-    region = get_region_by_name(sido, sigungu)
-    if not region:
-        region = {"id": 1, "nx": 61, "ny": 125, "station_id": 108}
+    # ── 1. 최단거리 거점 매핑 (Haversine 적용) ───────────
+    locations = get_all_location_coordinates()
+    mapped_location = None
+    min_dist = float('inf')
+    
+    for loc in locations:
+        dist = haversine_distance(lat_user, lon_user, float(loc["latitude"]), float(loc["longitude"]))
+        if dist < min_dist:
+            min_dist = dist
+            mapped_location = loc
+            
+    # 거점 데이터가 DB에 없으면 서울 영등포구를 디폴트로 지정
+    if not mapped_location:
+        print("⚠️ No locations found in DB. Falling back to default (Seoul Yeongdeungpo).")
+        mapped_location = {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}
+        min_dist = haversine_distance(lat_user, lon_user, 37.5264, 126.8962)
 
-    # ── 2. 날씨 데이터 수집 ──────────────────────────────
-    current_hour = datetime.now().hour
-    current_month = datetime.now().month
-
-    is_historical = selected_hour is not None and selected_hour != current_hour
-    weather_source = "realtime"
-
-    if is_historical:
-        historical_data = None
-        try:
-            historical_data = get_historical_weather(region["id"], current_month, selected_hour)
-        except Exception as e:
-            print(f"⚠️ Historical DB query failed: {e}")
-
-        if historical_data:
-            tdb = historical_data["avg_temp"]
-            rh = historical_data["avg_humidity"]
-        else:
-            # 24시간 추정 폴백
-            temp_by_hour = {
-                0: 22.0, 1: 21.5, 2: 21.0, 3: 20.5, 4: 20.0, 5: 19.5,
-                6: 20.0, 7: 21.5, 8: 23.0, 9: 24.5, 10: 26.0, 11: 27.5,
-                12: 28.5, 13: 29.5, 14: 30.0, 15: 30.0, 16: 29.5, 17: 29.0,
-                18: 28.0, 19: 27.0, 20: 26.0, 21: 25.0, 22: 24.0, 23: 23.0
-            }
-            hum_by_hour = {
-                0: 80.0, 1: 82.0, 2: 83.0, 3: 84.0, 4: 85.0, 5: 85.0,
-                6: 83.0, 7: 80.0, 8: 76.0, 9: 73.0, 10: 70.0, 11: 67.0,
-                12: 64.0, 13: 62.0, 14: 60.0, 15: 60.0, 16: 61.0, 17: 63.0,
-                18: 66.0, 19: 70.0, 20: 73.0, 21: 76.0, 22: 78.0, 23: 79.0
-            }
-            tdb = temp_by_hour.get(selected_hour, 26.0)
-            rh = hum_by_hour.get(selected_hour, 70.0)
-
-        is_outdoor = (profile.environment == "outdoor")
-        v = 1.5 if is_outdoor else 0.1
-        weather_source = "historical"
+    # ── 2. 해당 거점의 예보 캐시 로드 ──────────────────
+    loc_id = mapped_location["id"]
+    loc_lat = float(mapped_location["latitude"])
+    loc_lon = float(mapped_location["longitude"])
+    
+    forecast_wrapper = await get_weather_forecast_data(loc_id, loc_lat, loc_lon)
+    hourly_data = forecast_wrapper["hourly_data"]
+    
+    current_time_obj = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    hour = selected_hour if selected_hour is not None else current_time_obj.hour
+    
+    # 시간 인덱스 획득 (오늘의 0~23시 범위)
+    hour_idx = min(23, max(0, hour))
+    
+    # ── 3. 매핑된 시간대의 기상 요소 및 지역 UTCI 추출 ──────
+    tdb = hourly_data["temperature_2m"][hour_idx]
+    rh = hourly_data["relativehumidity_2m"][hour_idx]
+    v_raw = hourly_data["windspeed_10m"][hour_idx]
+    ghi = hourly_data["shortwave_radiation"][hour_idx]
+    
+    # 지역 기저 UTCI 획득 (DB에 선계산된 값이 없으면 실시간 계산)
+    if "utci" in hourly_data and len(hourly_data["utci"]) > hour_idx:
+        utci_raw = hourly_data["utci"][hour_idx]
     else:
-        weather = await get_realtime_weather(region["id"], region["station_id"])
-        tdb = weather["temperature"]
-        rh = weather["humidity"]
-        is_outdoor = (profile.environment == "outdoor")
-        v = weather["wind_speed"] if is_outdoor else 0.1
-        weather_source = weather["source"]
+        tmrt_raw = round(tdb + 0.0014 * ghi, 1)
+        utci_raw = round(calc_utci_raw(tdb=tdb, tr=tmrt_raw, v=v_raw, rh=rh), 2)
 
-    # ── 3. 개인화 생체 변수 환산 ──────────────────────────
-    age = profile.age
-    body_fat = profile.body_fat
-    gender = profile.gender
-    activity_level = profile.activity_level or "walking"
-
+    # ── 4. 개인화 체감 온도 연산 (나이, 체지방, 활동 상태 반영) ────
+    is_outdoor = (profile.environment == "outdoor")
+    v = v_raw if is_outdoor else 0.1
+    tmrt = round(tdb + 0.0014 * ghi, 1) if is_outdoor else tdb
+    
+    # 생체 및 대사 변수 계산
     bsa = compute_dubois_bsa(profile.weight, profile.height)
-    met = compute_met_personalized(gender, body_fat, activity_level)
-
-    # 평균 복사 온도(Tmrt) 추정
-    tmrt = estimate_tmrt(tdb, is_outdoor, selected_hour)
-
-    # ── 4. UTCI 기준값 계산 (순수 Python 다항식) ─────────
-    try:
-        utci_raw = round(calc_utci_raw(tdb=tdb, tr=tmrt, v=v, rh=rh), 2)
-    except Exception as e:
-        print(f"⚠️ UTCI 연산 에러: {e}. Fallback 추정값 사용.")
-        utci_raw = round(tdb + (tmrt - tdb) * 0.35 - max(0, v - 0.5) * 2.0, 2)
-
-    # ── 5. 개인화 오프셋 적용 ─────────────────────────────
-    age_offset = compute_age_sensitivity_offset(age)
-    fat_offset = compute_fat_sensitivity_offset(gender, body_fat)
-
-    # 피드백 바이어스 (CLO 조정값 → UTCI 오프셋으로 환산)
+    met = compute_met_personalized(profile.gender, profile.body_fat, profile.activity_level)
+    
+    # 개인화 오프셋 산출
+    age_offset = compute_age_sensitivity_offset(profile.age)
+    fat_offset = compute_fat_sensitivity_offset(profile.gender, profile.body_fat)
+    
+    # 피드백 바이어스 반영
     user_id = profile.user_id or "default_user"
     user_clo_bias = get_user_clo_bias_with_fallback(user_id)
     feedback_offset = user_clo_bias * -5.0  # CLO +0.1 ≈ UTCI -0.5°C 역산
-
-    utci_personalized = round(utci_raw + age_offset + fat_offset + feedback_offset, 2)
-
-    # ── 6. CLO 착의 추천량 산출 ──────────────────────────
-    base_clo = compute_clo_from_utci(utci_personalized, gender)
+    
+    # 대사 활동 추가 보정 (활동 수준에 따른 체열 가산)
+    # 가만히 있을 때(1.0 MET) 대비 걷기(2.0), 라이딩(4.0), 조깅(6.0) 시 체내 열 생성 가중
+    activity_level = profile.activity_level or "walking"
+    activity_utci_delta = 0.0
+    if activity_level == "walking":
+        activity_utci_delta = 1.0
+    elif activity_level == "cycling":
+        activity_utci_delta = 3.5
+    elif activity_level == "running":
+        activity_utci_delta = 6.0
+        
+    # 최종 개인화 체감 온도 산출
+    utci_personalized = round(utci_raw + age_offset + fat_offset + feedback_offset + activity_utci_delta, 2)
+    
+    # 의류 CLO 산출
+    base_clo = compute_clo_from_utci(utci_personalized, profile.gender)
     clo = round(max(0.1, base_clo + user_clo_bias), 2)
 
-    print(
-        f"🔬 UTCI 개인화: user={user_id}, age={age}, gender={gender}, bsa={bsa}, "
-        f"met={met}, activity={activity_level}, "
-        f"tdb={tdb}, tmrt={tmrt}, v={v}, rh={rh}, "
-        f"utci_raw={utci_raw}, age_off={age_offset}, fat_off={fat_offset}, "
-        f"fb_off={feedback_offset}, utci_p={utci_personalized}, clo={clo}"
-    )
-
-    # ── 7. UTCI 등급 분류 및 다국어 메시지 ──────────────
+    # ── 5. 다국어 UTCI 등급 분류 및 추천 매핑 ───────────
     TEXTS = {
         "ko": {
             "extreme_heat": ("극도의 열 스트레스 (>46°C)", ["기능성 흡한속건 반팔", "통풍 린넨 팬츠"], "생명 위협 수준의 열 환경입니다. 야외 활동을 즉시 중단하고 냉방 공간으로 피하십시오.", "15분마다 150ml 이상의 차가운 이온음료를 섭취하세요."),
@@ -464,21 +524,10 @@ async def get_recommendation(payload: RecommendationRequest):
             "moderate_cold": ("Moderate Cold Stress (-13~0°C)", ["Long-sleeve cotton shirt", "Thick cardigan"], "Layer up to maintain body temperature.", "Drink warm tea or broth frequently."),
             "strong_cold": ("Strong Cold Stress (-27∼-13°C)", ["Sweater", "Windproof outer jacket"], "Minimize exposed skin and stay indoors.", "Warm meals and high-calorie snacks help maintain energy."),
             "extreme_cold": ("Extreme Cold Stress (<-27°C)", ["Heavy padded jacket", "Thick thermal pants"], "Avoid outdoors. Risk of frostbite. Stay warm.", "Eat warm, high-calorie foods regularly."),
-        },
-        "ja": {
-            "extreme_heat": ("極度の熱ストレス (>46°C)", ["吸汗速乾機能Tシャツ", "通気性リネンパンツ"], "生命に関わる熱環境です。直ちに屋外活動を中止し冷房へ避難してください。", "15分ごとに150ml以上の冷えたスポーツドリンクを摂取してください。"),
-            "very_strong_heat": ("非常に強い熱ストレス (38~46°C)", ["軽い半袖Tシャツ", "薄手のリネンショーツ"], "日中の屋外活動は避け、必ず日陰で休憩してください。", "30分ごとに水分を補給してください。"),
-            "strong_heat": ("強い熱ストレス (32~38°C)", ["薄手の半袖綿Tシャツ", "軽い綿パンツ"], "屋外活動を最小限にし、頻繁に休憩してください。", "毎時300ml以上の水分補給が必須です。"),
-            "moderate_heat": ("普通の熱ストレス (26~32°C)", ["通常の半袖Tシャツ", "ジーンズまたは綿パンツ"], "風通しの良い環境を選んで活動してください。", "定期的な水分補給をお勧めします。"),
-            "comfortable": ("熱的快適 (9~26°C)", ["快適な半袖または薄手の長袖", "軽いジーンズ"], "アウトドア活動に最適な天気です！", "普段通りの水分摂取を維持してください。"),
-            "slight_cold": ("やや寒い (0~9°C)", ["薄手の長袖シャツ", "カーディガン"], "外出時は薄手のアウターをご持参ください。", "温かい飲み物を定期的に飲むことをお勧めします。"),
-            "moderate_cold": ("普通の寒さ (-13~0°C)", ["長袖綿シャツ", "厚手のカーディガン"], "重ね着で体温を維持してください。", "温かいお茶や汁物を頻繁に摂取してください。"),
-            "strong_cold": ("強い寒さ (-27∼-13°C)", ["セーター", "防風アウタージャケット"], "露出部位を最小限にし温かい室内にいてください。", "温かい食事と高カロリーの間食でエネルギーを維持してください。"),
-            "extreme_cold": ("極度の寒さ (<-27°C)", ["厚手のダウンジャケット", "厚手のパンツ"], "屋外活動は控えてください。凍傷の危険があります。", "温かく高カロリーな食事を十分に摂ってください。"),
-        },
+        }
     }
-
-    # UTCI 등급 분류 (9단계, ISO TR 11769 기준)
+    
+    # 9단계 키 분류
     if utci_personalized > 46:
         utci_key = "extreme_heat"
     elif utci_personalized > 38:
@@ -501,49 +550,76 @@ async def get_recommendation(payload: RecommendationRequest):
     lang_texts = TEXTS.get(lang, TEXTS["ko"])
     thermal_sensation, clothing, activity, hydration = lang_texts[utci_key]
 
-    # ── 8. 아바타 메타데이터 ──────────────────────────────
-    AVATAR_METADATA = {
-        "extreme_heat":      {"avatar_state": "sweating",     "clothing_codes": ["active_tee", "linen_shorts"]},
-        "very_strong_heat":  {"avatar_state": "sweating",     "clothing_codes": ["active_tee", "linen_shorts"]},
-        "strong_heat":       {"avatar_state": "hot",          "clothing_codes": ["short_sleeve_tee", "cotton_pants"]},
-        "moderate_heat":     {"avatar_state": "slightly_hot", "clothing_codes": ["cotton_shirt", "slacks"]},
-        "comfortable":       {"avatar_state": "comfortable",  "clothing_codes": ["comfortable_tee", "jeans"]},
-        "slight_cold":       {"avatar_state": "slightly_cold","clothing_codes": ["long_sleeve", "cardigan", "trousers"]},
-        "moderate_cold":     {"avatar_state": "cold",         "clothing_codes": ["long_sleeve_shirt", "warm_cardigan", "heavy_pants"]},
-        "strong_cold":       {"avatar_state": "shivering",    "clothing_codes": ["sweater", "heavy_jacket", "heavy_pants"]},
-        "extreme_cold":      {"avatar_state": "shivering",    "clothing_codes": ["sweater", "heavy_jacket", "heavy_pants"]},
-    }
+    # ── 6. 개인화 넛지(Nudge) 배너 생성 엔진 ──────────────────
+    nudge_warning = False
+    nudge_message = ""
+    
+    # 활동량에 의한 개인 온도가 높고, 격차가 벌어졌거나, 개인 체감이 강한 더위(32도) 이상일 때
+    diff_temp = round(utci_personalized - utci_raw, 1)
+    
+    if nudge_warning == False: # 기본 조건 판정
+        if diff_temp >= 3.0 or utci_personalized >= 32.0:
+            nudge_warning = True
+            
+    if nudge_warning:
+        # 활동별 맞춤 넛지 메시지 생성
+        activity_ko = {"sedentary": "휴식", "walking": "보행", "cycling": "자전거 라이딩", "running": "러닝/운동"}.get(activity_level, "활동")
+        
+        if utci_personalized >= 38:
+            nudge_message = (
+                f"🚨 [{activity_ko} 주의] 현재 지역 UTCI는 {utci_raw:.1f}°C지만, 회원님의 개인 체감 온도는 "
+                f"{utci_personalized:.1f}°C로 '매우 위험한 더위' 상태입니다. 즉시 활동을 멈추고 그늘로 대피하세요!"
+            )
+        else:
+            nudge_message = (
+                f"⚠️ [{activity_ko} 알림] 현재 지역 체감 지수는 {utci_raw:.1f}°C입니다. "
+                f"하지만 {activity_ko} 중인 회원님의 개인 맞춤 온도는 {utci_personalized:.1f}°C로 더 더울 수 있으니 미지근한 물을 자주 보충하세요!"
+            )
 
-    meta = AVATAR_METADATA.get(utci_key, {"avatar_state": "comfortable", "clothing_codes": ["comfortable_tee", "jeans"]})
-
+    # ── 7. 최종 JSON 반환 ─────────────────────────────
     return {
+        "mapped_location": {
+            "sido": mapped_location["sido"],
+            "sigungu": mapped_location["sigungu"],
+            "distance_km": round(min_dist, 2)
+        },
         "utci": utci_raw,
         "utci_personalized": utci_personalized,
         "utci_category": utci_key,
         "thermal_sensation": thermal_sensation,
-        # 하위 호환성: pmv 필드는 utci_personalized로 대체 반환
-        "pmv": utci_personalized,
+        "pmv": utci_personalized, # 하위 호환
         "weather": {
             "temperature": tdb,
             "humidity": rh,
-            "wind_speed": v,
+            "wind_speed": v_raw,
             "tmrt": tmrt,
-            "source": weather_source
+            "shortwave_radiation": ghi,
+            "source": forecast_wrapper["source"]
         },
         "body_params": {
             "bsa": bsa,
             "met": met,
             "age_offset": age_offset,
             "fat_offset": fat_offset,
+            "user_clo_bias": user_clo_bias
         },
         "recommendations": {
             "clothing": clothing,
             "activity": activity,
             "hydration": hydration,
-            "user_clo_bias": user_clo_bias,
             "clo_applied": clo,
-            "met_applied": met,
-            "avatar_state": meta["avatar_state"],
-            "clothing_codes": meta["clothing_codes"]
+            "met_applied": met
+        },
+        "nudge": {
+            "nudge_warning": nudge_warning,
+            "nudge_message": nudge_message,
+            "diff_temp": diff_temp
         }
     }
+
+# ─────────────────────────────────────────────
+# 9. 로컬 실행용 엔트리포인트
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

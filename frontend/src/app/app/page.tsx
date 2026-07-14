@@ -3,8 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useTranslation } from "@/i18n/useTranslation";
-import ThermalAvatar from "./ThermalAvatar";
+
 import { 
+  ComposedChart,
+  AreaChart,
+  Area,
   LineChart, 
   Line, 
   XAxis, 
@@ -44,6 +47,7 @@ const CustomChartTooltip = ({ active, payload }: any) => {
             </p>
           </div>
         )}
+
       </div>
     );
   }
@@ -56,6 +60,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 import { 
   Thermometer, 
   MapPin, 
+  Map, 
   User, 
   Wind, 
   Sliders, 
@@ -105,6 +110,11 @@ interface RecommendationData {
     met?: number;
     age_offset?: number;
     fat_offset?: number;
+  };
+  nudge?: {
+    nudge_warning: boolean;
+    nudge_message: string;
+    diff_temp: number;
   };
 }
 
@@ -211,6 +221,28 @@ export default function Dashboard() {
   const [showBodyFatGuide, setShowBodyFatGuide] = useState<boolean>(false);
   const [guideGenderTab, setGuideGenderTab] = useState<string>("male");
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
+  const [userLatitude, setUserLatitude] = useState<number>(37.5264); // 서울 영등포구 기본값
+  const [userLongitude, setUserLongitude] = useState<number>(126.8962);
+
+  // 전국 거점 위경도 매핑 테이블 (시도 + 시군구 조합)
+  const LOCATION_COORDINATES: Record<string, { lat: number; lon: number }> = {
+    "서울특별시_강남구": { lat: 37.5172, lon: 127.0473 },
+    "서울특별시_서초구": { lat: 37.4836, lon: 127.0327 },
+    "서울특별시_송파구": { lat: 37.5145, lon: 127.1059 },
+    "서울특별시_마포구": { lat: 37.5638, lon: 126.9084 },
+    "서울특별시_종로구": { lat: 37.5735, lon: 126.9790 },
+    "서울특별시_영등포구": { lat: 37.5264, lon: 126.8962 },
+    "경기도_수원시": { lat: 37.2636, lon: 127.0286 },
+    "경기도_성남시": { lat: 37.4449, lon: 127.1389 },
+    "부산광역시_해운대구": { lat: 35.1631, lon: 129.1636 },
+    "인천광역시_중구": { lat: 37.4728, lon: 126.6238 },
+    "대구광역시_중구": { lat: 35.8694, lon: 128.6062 },
+    "광주광역시_동구": { lat: 35.1461, lon: 126.9231 },
+    "대전광역시_중구": { lat: 36.3250, lon: 127.4208 },
+    "울산광역시_남구": { lat: 35.5437, lon: 129.3300 },
+    "세종특별자치시_세종시": { lat: 36.4800, lon: 127.2890 },
+    "제주특별자치도_제주시": { lat: 33.5006, lon: 126.5312 },
+  };
 
   // [신설] Supabase Auth & Guest 세션 상태
   const [userId, setUserId] = useState<string>("");
@@ -241,6 +273,7 @@ export default function Dashboard() {
     });
   };
   const [selectedTime, setSelectedTime] = useState<string>(getCurrentHourStr);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState<boolean>(false);
   const [times] = useState<string[]>(buildTimeSlotsAroundNow);
 
   // Feedback toast state
@@ -254,6 +287,84 @@ export default function Dashboard() {
   const [hourlyLoading, setHourlyLoading] = useState<boolean>(false);
 
   const theme = getThemeStyles(result?.pmv);
+
+  // 실시간 기상 경보/특보 판단 헬퍼
+  const getWeatherAlerts = (): { title: string; desc: string; type: "warning" | "danger" }[] => {
+    if (!result || !result.weather) return [];
+    const t = result.weather.temperature;
+    const w = result.weather.wind_speed;
+    const h = result.weather.humidity;
+    const alerts = [];
+
+    if (t >= 33) {
+      alerts.push({
+        title: "🥵 폭염 특보 (Extreme Heat)",
+        desc: "실외 활동 시 일사병 위험이 높으니 충분히 수분을 섭취하세요.",
+        type: "danger" as const
+      });
+    } else if (t <= -10) {
+      alerts.push({
+        title: "🥶 한파 특보 (Extreme Cold)",
+        desc: "동상 및 저체온증 위험이 있으니 외출 시 방한 의류를 철저히 갖추세요.",
+        type: "danger" as const
+      });
+    }
+
+    if (w >= 10.0) {
+      alerts.push({
+        title: "🌬️ 강풍 주의보 (High Wind)",
+        desc: "바람이 매우 강해 체온이 급격히 떨어질 수 있으니 야외 체류 시 방풍 아우터를 챙기세요.",
+        type: "warning" as const
+      });
+    }
+
+    if (h >= 90 && t >= 29) {
+      alerts.push({
+        title: "💦 고온다습 불쾌경보",
+        desc: "습도가 90% 이상으로 열 배출이 어렵습니다. 격렬한 신체 활동을 자제하세요.",
+        type: "warning" as const
+      });
+    }
+
+    return alerts;
+  };
+
+  // UTCI 기반 야외 활동별 적합도 산출 헬퍼
+  const getActivitySuitability = (utciVal: number) => {
+    // 5단계 등급 정의: 아주 좋음(Excellent), 좋음(Good), 보통(Moderate), 주의(Caution), 위험(Avoid)
+    const getLevel = (score: number) => {
+      if (score >= 90) return { label: "아주 좋음", color: "text-emerald-600 bg-emerald-50 border-emerald-100", barColor: "bg-emerald-500" };
+      if (score >= 75) return { label: "좋음", color: "text-blue-600 bg-blue-50 border-blue-100", barColor: "bg-blue-500" };
+      if (score >= 50) return { label: "보통", color: "text-amber-600 bg-amber-50 border-amber-100", barColor: "bg-amber-500" };
+      if (score >= 30) return { label: "주의", color: "text-orange-600 bg-orange-50 border-orange-100", barColor: "bg-orange-500" };
+      return { label: "위험", color: "text-rose-600 bg-rose-50 border-rose-100", barColor: "bg-rose-500" };
+    };
+
+    let runScore = 95;
+    let cycleScore = 95;
+    let walkScore = 95;
+
+    // UTCI 스트레스 지수에 따른 감점 설계
+    if (utciVal >= 38) { // 극심한 열 스트레스
+      runScore = 15; cycleScore = 20; walkScore = 30;
+    } else if (utciVal >= 32) { // 강한 열 스트레스
+      runScore = 40; cycleScore = 45; walkScore = 60;
+    } else if (utciVal >= 26) { // 중등도 열 스트레스
+      runScore = 70; cycleScore = 75; walkScore = 80;
+    } else if (utciVal < 9 && utciVal >= 0) { // 가벼운 추위 스트레스
+      runScore = 85; cycleScore = 80; walkScore = 75;
+    } else if (utciVal < 0 && utciVal >= -13) { // 중등도 추위 스트레스
+      runScore = 60; cycleScore = 50; walkScore = 55;
+    } else if (utciVal < -13) { // 강한 추위 스트레스
+      runScore = 20; cycleScore = 15; walkScore = 25;
+    }
+
+    return [
+      { name: "🏃 러닝", score: runScore, ...getLevel(runScore) },
+      { name: "🚴 라이딩", score: cycleScore, ...getLevel(cycleScore) },
+      { name: "🚶 산책", score: walkScore, ...getLevel(walkScore) }
+    ];
+  };
 
   // 0. 사용자 세션 초기화 (Guest & Auth 결합)
   useEffect(() => {
@@ -309,9 +420,27 @@ export default function Dashboard() {
   // ② 시도 변경 시 시군구 첫 번째 값으로 자동 설정
   useEffect(() => {
     if (regions[selectedSido] && regions[selectedSido].length > 0) {
-      setSelectedSigungu(regions[selectedSido][0]);
+      const firstSigungu = regions[selectedSido][0];
+      setSelectedSigungu(firstSigungu);
+      
+      const lookupKey = `${selectedSido}_${firstSigungu}`;
+      const coords = LOCATION_COORDINATES[lookupKey];
+      if (coords) {
+        setUserLatitude(coords.lat);
+        setUserLongitude(coords.lon);
+      }
     }
   }, [selectedSido, regions]);
+
+  // 시군구 변경 시 좌표 업데이트
+  useEffect(() => {
+    const lookupKey = `${selectedSido}_${selectedSigungu}`;
+    const coords = LOCATION_COORDINATES[lookupKey];
+    if (coords) {
+      setUserLatitude(coords.lat);
+      setUserLongitude(coords.lon);
+    }
+  }, [selectedSigungu]);
 
   // ③ 페이지 첫 진입 및 사용자 로그인 전환 시 자동 분석 실행
   useEffect(() => {
@@ -354,6 +483,14 @@ export default function Dashboard() {
       const bodyFatVal = overrides?.bodyFat ?? bodyFat;
 
       // 5개 예보 시간대 전체를 병렬 비동기 호출
+      // 현재 sido, sigungu를 통해 로컬에서 구한 대표 좌표값 확인
+      const lookupKey = `${sido}_${sigungu}`;
+      const defaultCoords = LOCATION_COORDINATES[lookupKey] || { lat: 37.5264, lon: 126.8962 };
+      
+      // GPS가 켜져서 해당 지역이 선택되어 있으면 상태 위경도를 쓰고, 아니면 거점 위경도를 활용
+      const targetLat = (sido === selectedSido && sigungu === selectedSigungu) ? userLatitude : defaultCoords.lat;
+      const targetLon = (sido === selectedSido && sigungu === selectedSigungu) ? userLongitude : defaultCoords.lon;
+
       const promises = times.map(async (timeStr) => {
         const parsedHour = parseInt(timeStr.split(":")[0]);
         const response = await fetch("http://localhost:8002/api/v1/recommend", {
@@ -370,6 +507,8 @@ export default function Dashboard() {
               environment: envVal,
               activity_level: activityLevel,
             },
+            latitude: targetLat,
+            longitude: targetLon,
             sido,
             sigungu,
             selected_hour: parsedHour,
@@ -461,14 +600,19 @@ export default function Dashboard() {
               if (matchSigungu) {
                 setSelectedSido(matchSido);
                 setSelectedSigungu(matchSigungu);
+                setUserLatitude(lat);
+                setUserLongitude(lon);
+                // 강제로 lat, lon 상태를 API 파라미터로 넘겨 분석
                 handleAnalyzeAllHours({ sido: matchSido, sigungu: matchSigungu });
-                alert(`현재 위치가 [${matchSido} ${matchSigungu}]로 설정되었습니다.`);
+                alert(`현재 위치가 [${matchSido} ${matchSigungu}]로 설정되었습니다. (좌표: ${lat.toFixed(4)}, ${lon.toFixed(4)})`);
               } else {
                 setSelectedSido(matchSido);
                 const fallbackGu = sigungus[0] || "";
                 setSelectedSigungu(fallbackGu);
+                setUserLatitude(lat);
+                setUserLongitude(lon);
                 handleAnalyzeAllHours({ sido: matchSido, sigungu: fallbackGu });
-                alert(`현재 위치 시도 [${matchSido}]가 설정되었으나 상세 구[${rawSigungu}] 매칭이 제한되어 근사 구[${fallbackGu}]로 매핑되었습니다.`);
+                alert(`현재 위치 시도 [${matchSido}]가 설정되었으나 상세 구[${rawSigungu}] 매칭이 제한되어 근사 구[${fallbackGu}]로 매핑되었습니다. (좌표: ${lat.toFixed(4)}, ${lon.toFixed(4)})`);
               }
             } else {
               alert(`식별된 위치 [${rawSido} ${rawSigungu}]가 서비스 범위 외 지역이거나 지원되지 않습니다.`);
@@ -877,16 +1021,21 @@ export default function Dashboard() {
         {/* Hero Section (Avatar & Live Weather Display) */}
         <section className="flex flex-col items-center px-6 pt-5 pb-2 shrink-0 relative">
           
-          {/* 위치 정보 & GPS 자동 매핑 */}
+          {/* 위치 정보 & GPS 자동 매핑 (모달 연동 및 마우스 커서/디자인 개선) */}
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-black text-slate-800 flex items-center gap-1">
-              <MapPin className="w-3.5 h-3.5 text-blue-500" />
+            <button
+              onClick={() => setIsLocationModalOpen(true)}
+              className="px-3 py-1 rounded-full bg-slate-100 hover:bg-blue-50 text-slate-800 hover:text-blue-600 text-xs font-black flex items-center gap-1.5 transition-all duration-200 border border-slate-200/40 shadow-sm"
+              title="클릭하여 수동 위치 설정 및 지도 보기"
+            >
+              <Map className="w-3.5 h-3.5 text-blue-500" />
               {selectedSido} {selectedSigungu}
-            </span>
+              <ChevronDown className="w-3 h-3 opacity-60" />
+            </button>
             <button
               onClick={handleGPSLocation}
               disabled={gpsLoading}
-              className="p-1 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 transition-colors disabled:opacity-50"
+              className="p-1.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 transition-all duration-200 disabled:opacity-50 shadow-sm"
               title="GPS 현재 위치 자동 매핑"
             >
               {gpsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
@@ -913,6 +1062,29 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* 실시간 기상 재해/특보 알림 배너 (깜빡임 애니메이션 추가) */}
+          {(() => {
+            const alerts = getWeatherAlerts();
+            if (alerts.length === 0) return null;
+            return (
+              <div className="w-full flex flex-col gap-1.5 mb-4 max-w-sm">
+                {alerts.map((alert, idx) => (
+                  <div 
+                    key={idx} 
+                    className={`px-3 py-2 rounded-2xl border text-[10px] leading-relaxed font-bold shadow-sm animate-pulse ${
+                      alert.type === "danger" 
+                        ? "bg-rose-50 border-rose-200 text-rose-700" 
+                        : "bg-amber-50 border-amber-200 text-amber-700"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1 font-black mb-0.5">{alert.title}</div>
+                    <div>{alert.desc}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
           {/* 체감 지수 배지 (UTCI 기반) */}
           {result && (
             <div className={`px-4 py-1.5 rounded-full text-xs font-black shadow-sm flex items-center gap-1.5 z-10 transition-colors ${
@@ -930,23 +1102,34 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 써멀 아바타 렌더링 */}
-          <div className="relative my-2 w-48 h-56 flex items-center justify-center">
-            {/* 아바타 배경 글로우 서클 */}
-            <div className={`absolute w-36 h-36 rounded-full blur-xl opacity-40 transition-colors duration-500 ${
-              result && result.pmv >= 1.0 
-                ? "bg-rose-400" 
-                : result && result.pmv <= -1.0 
-                  ? "bg-sky-400" 
-                  : "bg-emerald-400"
-            }`} />
-            
-            <ThermalAvatar
-              gender={gender as 'male' | 'female'}
-              avatarState={result?.recommendations?.avatar_state ?? 'comfortable'}
-              clothingCodes={result?.recommendations?.clothing_codes ?? []}
-            />
-          </div>
+          {/* 개인화 안전 넛지 배너 */}
+          {result && result.nudge && (
+            <div className={`w-full max-w-[340px] p-5 my-4 rounded-3xl border transition-all duration-300 backdrop-blur-xl shadow-xl z-10 flex flex-col gap-3.5 ${
+              result.nudge.nudge_warning 
+                ? "bg-rose-500/10 border-rose-500/35 text-rose-200" 
+                : "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
+            }`}>
+              <div className="flex items-center gap-2.5 font-black text-xs uppercase tracking-wider">
+                {result.nudge.nudge_warning ? (
+                  <AlertTriangle className="w-5 h-5 text-rose-400 animate-pulse" />
+                ) : (
+                  <Sparkles className="w-5 h-5 text-emerald-400" />
+                )}
+                <span>{result.nudge.nudge_warning ? "개인화 온열 피로 경고" : "체감 정보 알림"}</span>
+              </div>
+              <p className="text-xs font-bold leading-relaxed text-slate-100/90 whitespace-pre-line">
+                {result.nudge.nudge_message || "현재 안전한 상태입니다. 편안한 일상 활동을 즐기세요."}
+              </p>
+              {result.nudge.diff_temp !== 0 && (
+                <div className="border-t border-white/10 pt-2 flex justify-between items-center text-[10px] font-bold text-slate-300">
+                  <span>지역 체감 온도: {result.utci ? result.utci.toFixed(1) : result.pmv.toFixed(1)}°C</span>
+                  <span className={result.nudge.diff_temp > 0 ? "text-rose-300" : "text-sky-300"}>
+                    개인 격차: {result.nudge.diff_temp > 0 ? `+${result.nudge.diff_temp}` : result.nudge.diff_temp}°C
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 3버튼 피드백 컨트롤 루프 */}
           {result && (
@@ -1187,8 +1370,8 @@ export default function Dashboard() {
 
             {/* 리치 3단 가이드 리스트 */}
             <div className="flex flex-col gap-2.5">
-              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/50 flex gap-3 items-start hover:border-blue-200 transition-colors">
-                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 shrink-0 mt-0.5">
+              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-blue-50/80 to-indigo-50/60 border border-blue-200/40 flex gap-3 items-start hover:border-blue-300/60 hover:shadow-md hover:shadow-blue-100/50 transition-all duration-200 backdrop-blur-sm">
+                <div className="p-2 rounded-xl bg-blue-500/15 text-blue-600 shrink-0 mt-0.5 shadow-sm shadow-blue-100">
                   <Shirt className="w-4 h-4" />
                 </div>
                 <div>
@@ -1198,13 +1381,13 @@ export default function Dashboard() {
                       ? (Array.isArray(result.recommendations.clothing)
                         ? result.recommendations.clothing.join(", ")
                         : result.recommendations.clothing)
-                      : isLoading ? t("ai.loading") : t("ai.empty")}
+                      : isLoading ? <span className="animate-pulse text-slate-400">{t("ai.loading")}</span> : t("ai.empty")}
                   </p>
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/50 flex gap-3 items-start hover:border-blue-200 transition-colors">
-                <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-600 shrink-0 mt-0.5">
+              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-cyan-50/80 to-teal-50/60 border border-cyan-200/40 flex gap-3 items-start hover:border-cyan-300/60 hover:shadow-md hover:shadow-cyan-100/50 transition-all duration-200 backdrop-blur-sm">
+                <div className="p-2 rounded-xl bg-cyan-500/15 text-cyan-600 shrink-0 mt-0.5 shadow-sm shadow-cyan-100">
                   <Droplet className="w-4 h-4" />
                 </div>
                 <div>
@@ -1215,8 +1398,8 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/50 flex gap-3 items-start hover:border-blue-200 transition-colors">
-                <div className="p-2 rounded-xl bg-orange-500/10 text-orange-600 shrink-0 mt-0.5">
+              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-amber-50/80 to-orange-50/60 border border-amber-200/40 flex gap-3 items-start hover:border-amber-300/60 hover:shadow-md hover:shadow-amber-100/50 transition-all duration-200 backdrop-blur-sm">
+                <div className="p-2 rounded-xl bg-orange-500/15 text-orange-600 shrink-0 mt-0.5 shadow-sm shadow-orange-100">
                   <AlertTriangle className="w-4 h-4" />
                 </div>
                 <div>
@@ -1229,6 +1412,35 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* 10단계: 활동별 야외 적합 지수 카드 목록 */}
+          {result && (
+            <div className="flex flex-col gap-3 bg-white/40 p-4 rounded-3xl border border-slate-100/80 shadow-sm backdrop-blur-sm">
+              <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-emerald-500" />
+                {t("activity.suitability") || "활동별 야외 적합 지수"}
+              </span>
+              
+              <div className="grid grid-cols-3 gap-2.5 mt-1.5">
+                {getActivitySuitability(result.utci_personalized ?? result.utci ?? 0).map((act, idx) => (
+                  <div 
+                    key={idx} 
+                    className="p-3 rounded-2xl border bg-white/60 hover:bg-white hover:border-emerald-200 hover:shadow-md hover:shadow-emerald-50/50 transition-all duration-200 flex flex-col items-center text-center gap-1"
+                  >
+                    <span className="text-[11px] font-black text-slate-700">{act.name}</span>
+                    <span className={`text-[8px] font-black px-2 py-0.5 rounded-full border ${act.color}`}>
+                      {act.label}
+                    </span>
+                    <span className="text-sm font-black text-slate-900 mt-0.5">{act.score}점</span>
+                    {/* 게이지 바 */}
+                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1 shadow-inner">
+                      <div className={`h-full ${act.barColor}`} style={{ width: `${act.score}%` }}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 3. 시간대별 체감 지수 예보 (선형 차트) */}
           <div className="flex flex-col gap-3 bg-white/40 p-4 rounded-3xl border border-slate-100/80 shadow-sm">
             <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center justify-between">
@@ -1239,10 +1451,10 @@ export default function Dashboard() {
               <span className="text-[10px] text-slate-400 font-semibold">(차트 터치로 시간 변경)</span>
             </span>
 
-            {/* Recharts LineChart */}
+            {/* Recharts ComposedChart - Area 그라데이션 + 위험구간 밴드 */}
             <div className="h-44 w-full mt-2">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart
+                <ComposedChart
                   data={times.map((t) => {
                     const res = hourlyResults[t];
                     const tempVal = res?.weather?.temperature ?? 0;
@@ -1262,6 +1474,13 @@ export default function Dashboard() {
                     }
                   }}
                 >
+                  {/* SVG 그라데이션 정의 */}
+                  <defs>
+                    <linearGradient id="utciAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.18} />
+                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
                   <XAxis 
                     dataKey="time" 
                     tick={{ fontSize: 9, fontWeight: 800, fill: "#64748b" }} 
@@ -1278,11 +1497,22 @@ export default function Dashboard() {
                     content={<CustomChartTooltip />} 
                     cursor={{ stroke: "rgba(96, 165, 250, 0.2)", strokeWidth: 2 }} 
                   />
-                  {/* 쾌적 범위 가이드 라인 (9도~26도) */}
-                  <ReferenceLine y={26} stroke="#f97316" strokeDasharray="3 3" opacity={0.5} />
-                  <ReferenceLine y={9} stroke="#10b981" strokeDasharray="3 3" opacity={0.5} />
+                  {/* 쾌적 범위 경계 가이드 라인 */}
+                  <ReferenceLine y={32} stroke="#ef4444" strokeDasharray="4 3" opacity={0.6} label={{ value: "열위험", position: "insideTopRight", fontSize: 8, fill: "#ef4444" }} />
+                  <ReferenceLine y={26} stroke="#f97316" strokeDasharray="3 3" opacity={0.45} />
+                  <ReferenceLine y={9} stroke="#10b981" strokeDasharray="3 3" opacity={0.45} />
                   
-                  {/* 실제 기온 선 */}
+                  {/* 체감 온도 Area (그라데이션 채우기) */}
+                  <Area
+                    type="monotone"
+                    dataKey="체감 온도"
+                    stroke="none"
+                    fill="url(#utciAreaGrad)"
+                    fillOpacity={1}
+                    isAnimationActive={true}
+                    animationDuration={600}
+                  />
+                  {/* 실제 기온 보조 선 */}
                   <Line 
                     type="monotone" 
                     dataKey="실제 기온" 
@@ -1292,13 +1522,13 @@ export default function Dashboard() {
                     dot={{ r: 2 }}
                     activeDot={{ r: 4 }}
                   />
-                  {/* 체감 온도 선 */}
+                  {/* 체감 온도 메인 선 */}
                   <Line 
                     type="monotone" 
                     dataKey="체감 온도" 
                     stroke="#2563eb" 
                     strokeWidth={3}
-                    dot={(props) => {
+                    dot={(props: any) => {
                       const { cx, cy, payload } = props;
                       const isSelected = payload.time === selectedTime;
                       return (
@@ -1316,7 +1546,7 @@ export default function Dashboard() {
                     }}
                     activeDot={{ r: 7 }}
                   />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
 
@@ -1385,74 +1615,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 5. 위치 직접 변경 및 지도 아코디언 */}
-          <div className="border-t border-slate-100 pt-5 mt-2 flex flex-col gap-4">
-            <details className="group">
-              <summary className="list-none flex items-center justify-between text-xs font-black text-slate-400 uppercase tracking-wider cursor-pointer select-none">
-                <span className="flex items-center gap-1.5">
-                  <MapPin className="w-4 h-4 text-blue-500" />
-                  {t("location.title")} 수동 변경 / 지도 보기
-                </span>
-                <ChevronDown className="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform" />
-              </summary>
-              
-              <div className="flex flex-col gap-3 mt-4 animate-in slide-in-from-top duration-300">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sido")}</label>
-                    <select
-                      value={selectedSido}
-                      onChange={(e) => {
-                        const newSido = e.target.value;
-                        setSelectedSido(newSido);
-                        const firstSigungu = regions[newSido]?.[0] ?? "";
-                        setSelectedSigungu(firstSigungu);
-                        if (newSido && firstSigungu) {
-                          handleAnalyzeAllHours({ sido: newSido, sigungu: firstSigungu });
-                        }
-                      }}
-                      className="w-full px-2 py-1 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none"
-                    >
-                      {sidoList.map((sido) => (
-                        <option key={sido} value={sido}>{tSido(sido)}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sigungu")}</label>
-                    <select
-                      value={selectedSigungu}
-                      onChange={(e) => {
-                        const newSigungu = e.target.value;
-                        setSelectedSigungu(newSigungu);
-                        if (selectedSido && newSigungu) {
-                          handleAnalyzeAllHours({ sigungu: newSigungu });
-                        }
-                      }}
-                      className="w-full px-2 py-1 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none"
-                    >
-                      {sigunguList.map((gu) => (
-                        <option key={gu} value={gu}>{tSigungu(gu)}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
 
-                {/* 미니 구글맵 프레임 */}
-                <div className="relative h-44 rounded-xl border border-slate-200 overflow-hidden shadow-inner mt-1">
-                  <iframe
-                    title="Google Maps"
-                    width="100%"
-                    height="100%"
-                    frameBorder="0"
-                    style={{ border: 0, filter: "opacity(0.85) grayscale(20%)" }}
-                    src={`https://maps.google.com/maps?q=${encodeURIComponent(selectedSido + " " + selectedSigungu)}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
-                    allowFullScreen
-                  />
-                </div>
-              </div>
-            </details>
-          </div>
 
           {/* 리셋 & 링크 공유 */}
           <div className="flex justify-between items-center border-t border-slate-100 pt-5 mt-2">
@@ -1692,6 +1855,90 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      
+      {/* 5. 위치 직접 변경 및 지도 보기 고급 글래스모피즘 모달 */}
+      {isLocationModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
+          <div className="bg-white/95 w-full max-w-sm rounded-3xl border border-slate-100 p-5 shadow-2xl relative flex flex-col gap-4 animate-in zoom-in-95 duration-200">
+            {/* 모달 헤더 */}
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                <Map className="w-4 h-4 text-blue-500" />
+                {t("location.title") || "현재 위치 설정 / 지도 보기"}
+              </span>
+              <button 
+                onClick={() => setIsLocationModalOpen(false)}
+                className="p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+              >
+                <span className="text-sm font-bold">✕</span>
+              </button>
+            </div>
+            
+            {/* 셀렉트박스 변경 */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sido")}</label>
+                <select
+                  value={selectedSido}
+                  onChange={(e) => {
+                    const newSido = e.target.value;
+                    setSelectedSido(newSido);
+                    const firstSigungu = regions[newSido]?.[0] ?? "";
+                    setSelectedSigungu(firstSigungu);
+                    if (newSido && firstSigungu) {
+                      handleAnalyzeAllHours({ sido: newSido, sigungu: firstSigungu });
+                    }
+                  }}
+                  className="w-full px-2 py-1.5 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {sidoList.map((sido) => (
+                    <option key={sido} value={sido}>{tSido(sido)}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sigungu")}</label>
+                <select
+                  value={selectedSigungu}
+                  onChange={(e) => {
+                    const newSigungu = e.target.value;
+                    setSelectedSigungu(newSigungu);
+                    if (selectedSido && newSigungu) {
+                      handleAnalyzeAllHours({ sigungu: newSigungu });
+                    }
+                  }}
+                  className="w-full px-2 py-1.5 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {sigunguList.map((gu) => (
+                    <option key={gu} value={gu}>{tSigungu(gu)}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 미니 구글맵 프레임 */}
+            <div className="relative h-48 rounded-2xl border border-slate-200 overflow-hidden shadow-inner mt-1">
+              <iframe
+                title="Google Maps"
+                width="100%"
+                height="100%"
+                frameBorder="0"
+                style={{ border: 0, filter: "opacity(0.85) grayscale(20%)" }}
+                src={`https://maps.google.com/maps?q=${encodeURIComponent(selectedSido + " " + selectedSigungu)}&t=&z=13&ie=UTF8&iwloc=&output=embed`}
+                allowFullScreen
+              />
+            </div>
+            
+            {/* 완료 버튼 */}
+            <button
+              onClick={() => setIsLocationModalOpen(false)}
+              className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-md transition-colors"
+            >
+              확인 및 적용
+            </button>
           </div>
         </div>
       )}

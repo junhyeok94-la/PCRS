@@ -24,7 +24,7 @@ def calculate_utci_pure(tdb: float, tr: float, v: float, rh: float) -> float:
     
     # 3. 10m 풍속 → 1.1m 높이 환산 (로그 풍속 프로파일)
     v10 = v  # 입력이 10m 기준이면 그대로, 1.1m라면 /0.7
-    v_adj = max(0.5, v10)  # 최소 0.5 m/s (UTCI 유효 범위)
+    v_adj = min(17.0, max(0.5, v10))  # 최소 0.5 m/s, 최대 17.0 m/s (UTCI 다항식 안전 유효 범위)
     
     # 4. UTCI 다항식 (6차, Fiala 모델 기반, Bröde 2012)
     # Reference: https://doi.org/10.1007/s00484-011-0454-1

@@ -5,6 +5,7 @@ const ja = {
   "header.guest": "ゲスト（ログイン/登録）",
   "header.guest_short": "ゲスト",
   "header.guest_feedback": "仮フィードバック有効",
+  "header.login_short": "ログイン",
   "header.logout": "ログアウト",
   "header.profile": "個人化プリセット",
 
@@ -103,6 +104,8 @@ const ja = {
   "bodyfat.overweight_desc_f": "お尻やお腹下側の皮下脂肪蓄積が目立ち、ボディラインが丸みを帯びた体型。",
 
   // フィードバックトースト
+  "weather.alert": "気象災害特別警報アラート",
+  "activity.suitability": "活動別のアウトドア適合性",
   "toast.feedback_ok": "フィードバックが反映されました。推薦を更新します。",
   "toast.feedback_fail": "フィードバックの送信に失敗しました。後でもう一度お試しください。",
   "toast.network_error": "ネットワークエラーが発生しました。",
