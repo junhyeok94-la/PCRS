@@ -4,6 +4,51 @@ import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useTranslation } from "@/i18n/useTranslation";
 import ThermalAvatar from "./ThermalAvatar";
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  Tooltip, 
+  ResponsiveContainer, 
+  ReferenceLine 
+} from "recharts";
+
+// ─── Recharts 선형 차트 커스텀 툴팁 컴포넌트 ───
+const CustomChartTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="bg-slate-900/95 border border-slate-700/80 p-3 rounded-2xl shadow-xl backdrop-blur-md text-white flex flex-col gap-1.5 z-50">
+        <div className="flex justify-between items-center gap-4">
+          <span className="text-[10px] font-black text-blue-400">{data.time}</span>
+          <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full font-bold">
+            {data.sensation || "분석 완료"}
+          </span>
+        </div>
+        <div className="flex flex-col text-xs font-bold gap-0.5 mt-0.5">
+          <div className="flex justify-between gap-6 text-slate-300">
+            <span>체감 온도:</span>
+            <span className="text-white font-black">{data["체감 온도"]}°C</span>
+          </div>
+          <div className="flex justify-between gap-6 text-slate-400 text-[10px]">
+            <span>실제 기온:</span>
+            <span>{data["실제 기온"]}°C</span>
+          </div>
+        </div>
+        {data.clothing && data.clothing.length > 0 && (
+          <div className="border-t border-slate-800 pt-1.5 mt-1">
+            <span className="text-[9px] text-slate-400 uppercase tracking-wider font-bold">추천 착장</span>
+            <p className="text-[10px] text-indigo-300 font-extrabold mt-0.5 leading-snug">
+              {data.clothing.join(", ")}
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return null;
+};
 
 const SUPABASE_URL = "https://bdkvcrvmzeghburhcdut.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJka3ZjcnZtemVnaGJ1cmhjZHV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3MTI1OTEsImV4cCI6MjA5ODI4ODU5MX0.PVvfBdIbLmhOwhXN5vJc9kiNxPjkRTgwnO6JjgzU5P8";
@@ -205,6 +250,8 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [result, setResult] = useState<RecommendationData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hourlyResults, setHourlyResults] = useState<Record<string, RecommendationData>>({});
+  const [hourlyLoading, setHourlyLoading] = useState<boolean>(false);
 
   const theme = getThemeStyles(result?.pmv);
 
@@ -269,26 +316,35 @@ export default function Dashboard() {
   // ③ 페이지 첫 진입 및 사용자 로그인 전환 시 자동 분석 실행
   useEffect(() => {
     if (Object.keys(regions).length > 0 && userId) {
-      handleAnalyze();
+      handleAnalyzeAllHours();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [regions, userId]);
 
   // ④ 신체 스펙 및 파라미터 변경 시 디바운스 분석 실행 (실시간 반응감 극대화)
+  // * selectedTime은 의도적으로 제외하여, 시간대 스위칭 시 불필요한 네트워크 fetch를 차단함
   useEffect(() => {
     if (Object.keys(regions).length === 0 || !userId) return;
     const delayDebounce = setTimeout(() => {
-      handleAnalyze();
+      handleAnalyzeAllHours();
     }, 350);
     return () => clearTimeout(delayDebounce);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height, weight, age, bodyFat, gender, environment, activityLevel, selectedTime]);
+  }, [height, weight, age, bodyFat, gender, environment, activityLevel, selectedSido, selectedSigungu]);
 
-  const handleAnalyze = async (
-    overrides?: { sido?: string; sigungu?: string; gender?: string; environment?: string; bodyFat?: string; selectedHour?: string }
+  // ⑤ 시간대 변경 시 로컬에서 즉시 맵핑하여 지연 시간(0ms) 제거
+  useEffect(() => {
+    if (hourlyResults[selectedTime]) {
+      setResult(hourlyResults[selectedTime]);
+    }
+  }, [selectedTime, hourlyResults]);
+
+  const handleAnalyzeAllHours = async (
+    overrides?: { sido?: string; sigungu?: string; gender?: string; environment?: string; bodyFat?: string }
   ) => {
     if (!userId) return;
     setIsLoading(true);
+    setHourlyLoading(true);
     setError(null);
     try {
       const sido = overrides?.sido ?? selectedSido;
@@ -296,56 +352,74 @@ export default function Dashboard() {
       const genderVal = overrides?.gender ?? gender;
       const envVal = overrides?.environment ?? environment;
       const bodyFatVal = overrides?.bodyFat ?? bodyFat;
-      const selectedHourVal = overrides?.selectedHour ?? selectedTime;
 
-      const parsedHour = selectedHourVal ? parseInt(selectedHourVal.split(":")[0]) : null;
+      // 5개 예보 시간대 전체를 병렬 비동기 호출
+      const promises = times.map(async (timeStr) => {
+        const parsedHour = parseInt(timeStr.split(":")[0]);
+        const response = await fetch("http://localhost:8002/api/v1/recommend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile: {
+              user_id: userId,
+              height: parseFloat(height) || 171,
+              weight: parseFloat(weight) || 60,
+              age: parseInt(age) || 28,
+              body_fat: bodyFatVal ? parseFloat(bodyFatVal) : null,
+              gender: genderVal,
+              environment: envVal,
+              activity_level: activityLevel,
+            },
+            sido,
+            sigungu,
+            selected_hour: parsedHour,
+            lang,
+          }),
+        });
 
-      const response = await fetch("http://localhost:8002/api/v1/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profile: {
-            user_id: userId,
-            height: parseFloat(height) || 171,
-            weight: parseFloat(weight) || 60,
-            age: parseInt(age) || 28,
-            body_fat: bodyFatVal ? parseFloat(bodyFatVal) : null,
-            gender: genderVal,
-            environment: envVal,
-            activity_level: activityLevel,
-          },
-          sido,
-          sigungu,
-          selected_hour: parsedHour,
-          lang,
-        }),
+        if (!response.ok) throw new Error(`${timeStr} 예보 조회를 실패했습니다.`);
+        const data = await response.json();
+        return {
+          time: timeStr,
+          data: {
+            utci: data.utci,
+            utci_personalized: data.utci_personalized,
+            utci_category: data.utci_category,
+            pmv: data.pmv ?? data.utci_personalized,
+            thermal_sensation: data.thermal_sensation,
+            recommendations: data.recommendations,
+            weather: data.weather,
+            body_params: data.body_params,
+          } as RecommendationData,
+        };
       });
 
-      if (!response.ok) throw new Error("서버 연산 중 에러가 발생했습니다.");
-
-      const data = await response.json();
-      setResult({
-        utci: data.utci,
-        utci_personalized: data.utci_personalized,
-        utci_category: data.utci_category,
-        pmv: data.pmv ?? data.utci_personalized,
-        thermal_sensation: data.thermal_sensation,
-        recommendations: data.recommendations,
-        weather: data.weather,
-        body_params: data.body_params,
+      const resultsList = await Promise.all(promises);
+      const resultsMap: Record<string, RecommendationData> = {};
+      resultsList.forEach((item) => {
+        resultsMap[item.time] = item.data;
       });
+
+      setHourlyResults(resultsMap);
+
+      // 현재 선택되어 있는 시간대의 결과 매칭
+      const currentResult = resultsMap[selectedTime];
+      if (currentResult) {
+        setResult(currentResult);
+      }
     } catch (err: any) {
       console.error(err);
       setError(err.message || "서버 통신 실패");
     } finally {
       setIsLoading(false);
+      setHourlyLoading(false);
     }
   };
 
   const handleQuickFillBodyFat = (value: string) => {
     setBodyFat(value);
     setShowBodyFatGuide(false);
-    handleAnalyze({ bodyFat: value });
+    handleAnalyzeAllHours({ bodyFat: value });
   };
 
   const handleGPSLocation = () => {
@@ -387,13 +461,13 @@ export default function Dashboard() {
               if (matchSigungu) {
                 setSelectedSido(matchSido);
                 setSelectedSigungu(matchSigungu);
-                handleAnalyze({ sido: matchSido, sigungu: matchSigungu });
+                handleAnalyzeAllHours({ sido: matchSido, sigungu: matchSigungu });
                 alert(`현재 위치가 [${matchSido} ${matchSigungu}]로 설정되었습니다.`);
               } else {
                 setSelectedSido(matchSido);
                 const fallbackGu = sigungus[0] || "";
                 setSelectedSigungu(fallbackGu);
-                handleAnalyze({ sido: matchSido, sigungu: fallbackGu });
+                handleAnalyzeAllHours({ sido: matchSido, sigungu: fallbackGu });
                 alert(`현재 위치 시도 [${matchSido}]가 설정되었으나 상세 구[${rawSigungu}] 매칭이 제한되어 근사 구[${fallbackGu}]로 매핑되었습니다.`);
               }
             } else {
@@ -621,7 +695,7 @@ export default function Dashboard() {
         setFeedbackToast({ msg: "피드백이 반영되었습니다. 추천을 다시 업데이트합니다.", type: "success" });
         setTimeout(() => setFeedbackToast(null), 3000);
         // 피드백 반영 후 대시보드 상태 즉시 재분석
-        await handleAnalyze();
+        await handleAnalyzeAllHours();
       } else {
         setFeedbackToast({ msg: "피드백 전송에 실패했습니다. 잠시 후 다시 시도하세요.", type: "error" });
         setTimeout(() => setFeedbackToast(null), 3000);
@@ -693,7 +767,7 @@ export default function Dashboard() {
     setEnvironment(defaults.environment);
     setSelectedSido(defaults.sido);
     setSelectedSigungu(defaults.sigungu);
-    handleAnalyze({ 
+    handleAnalyzeAllHours({ 
       sido: defaults.sido, 
       sigungu: defaults.sigungu, 
       gender: defaults.gender, 
@@ -771,7 +845,7 @@ export default function Dashboard() {
               {langs.map((l) => (
                 <button
                   key={l}
-                  onClick={() => { setLang(l); handleAnalyze(); }}
+                  onClick={() => { setLang(l); handleAnalyzeAllHours(); }}
                   className={`px-1.5 py-0.5 rounded text-[8px] font-black transition-all ${
                     lang === l ? "bg-blue-600 text-white shadow-sm" : "text-slate-400 hover:text-slate-200"
                   }`}
@@ -1155,35 +1229,120 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* 3. 시간대별 체감 지수 예보 (가로 탭 칩스) */}
-          <div className="flex flex-col gap-3">
-            <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Sliders className="w-4 h-4 text-blue-500" />
-              {t("time.title")}
+          {/* 3. 시간대별 체감 지수 예보 (선형 차트) */}
+          <div className="flex flex-col gap-3 bg-white/40 p-4 rounded-3xl border border-slate-100/80 shadow-sm">
+            <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Sliders className="w-4 h-4 text-blue-500" />
+                {t("time.title") || "시간대별 체감 지수 예보"}
+              </span>
+              <span className="text-[10px] text-slate-400 font-semibold">(차트 터치로 시간 변경)</span>
             </span>
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-              {times.map((time) => {
-                const isSelected = selectedTime === time;
-                return (
-                  <button
-                    key={time}
-                    onClick={() => {
-                      setSelectedTime(time);
-                      handleAnalyze({ selectedHour: time });
+
+            {/* Recharts LineChart */}
+            <div className="h-44 w-full mt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={times.map((t) => {
+                    const res = hourlyResults[t];
+                    const tempVal = res?.weather?.temperature ?? 0;
+                    const utciVal = res?.utci_personalized ?? res?.utci ?? 0;
+                    return {
+                      time: t,
+                      "체감 온도": Math.round(utciVal * 10) / 10,
+                      "실제 기온": Math.round(tempVal * 10) / 10,
+                      sensation: res?.thermal_sensation ?? "",
+                      clothing: res?.recommendations?.clothing ?? [],
+                    };
+                  })}
+                  margin={{ top: 10, right: 15, left: -25, bottom: 5 }}
+                  onClick={(e) => {
+                    if (e && e.activeLabel) {
+                      setSelectedTime(String(e.activeLabel));
+                    }
+                  }}
+                >
+                  <XAxis 
+                    dataKey="time" 
+                    tick={{ fontSize: 9, fontWeight: 800, fill: "#64748b" }} 
+                    axisLine={false} 
+                    tickLine={false} 
+                  />
+                  <YAxis 
+                    tick={{ fontSize: 9, fontWeight: 700, fill: "#64748b" }} 
+                    axisLine={false} 
+                    tickLine={false} 
+                    domain={["auto", "auto"]} 
+                  />
+                  <Tooltip 
+                    content={<CustomChartTooltip />} 
+                    cursor={{ stroke: "rgba(96, 165, 250, 0.2)", strokeWidth: 2 }} 
+                  />
+                  {/* 쾌적 범위 가이드 라인 (9도~26도) */}
+                  <ReferenceLine y={26} stroke="#f97316" strokeDasharray="3 3" opacity={0.5} />
+                  <ReferenceLine y={9} stroke="#10b981" strokeDasharray="3 3" opacity={0.5} />
+                  
+                  {/* 실제 기온 선 */}
+                  <Line 
+                    type="monotone" 
+                    dataKey="실제 기온" 
+                    stroke="#94a3b8" 
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    dot={{ r: 2 }}
+                    activeDot={{ r: 4 }}
+                  />
+                  {/* 체감 온도 선 */}
+                  <Line 
+                    type="monotone" 
+                    dataKey="체감 온도" 
+                    stroke="#2563eb" 
+                    strokeWidth={3}
+                    dot={(props) => {
+                      const { cx, cy, payload } = props;
+                      const isSelected = payload.time === selectedTime;
+                      return (
+                        <circle 
+                          key={payload.time}
+                          cx={cx} 
+                          cy={cy} 
+                          r={isSelected ? 6 : 4} 
+                          fill={isSelected ? "#2563eb" : "#ffffff"} 
+                          stroke="#2563eb" 
+                          strokeWidth={isSelected ? 3 : 2}
+                          style={{ cursor: "pointer" }}
+                        />
+                      );
                     }}
-                    className={`px-3 py-2.5 rounded-xl border flex flex-col items-center gap-1 min-w-[76px] transition-all focus:outline-none shrink-0 ${
+                    activeDot={{ r: 7 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* 차트 하단 미니 옷 정보 및 쾌적도 요약 */}
+            <div className="grid grid-cols-5 gap-1.5 mt-2">
+              {times.map((t) => {
+                const res = hourlyResults[t];
+                const isSelected = t === selectedTime;
+                return (
+                  <div 
+                    key={t}
+                    onClick={() => setSelectedTime(t)}
+                    className={`p-1.5 rounded-xl border flex flex-col items-center justify-between text-center transition-all cursor-pointer ${
                       isSelected 
-                        ? "bg-blue-600 border-blue-600 text-white shadow-md scale-105" 
-                        : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                        ? "bg-blue-600/10 border-blue-500 shadow-sm" 
+                        : "bg-slate-50/50 border-slate-100 hover:bg-slate-100/50"
                     }`}
                   >
-                    <span className="text-[10px] font-black">{time}</span>
-                    {time === getCurrentHourStr() ? (
-                      <span className={`text-[8px] px-1 rounded font-black ${isSelected ? "bg-white/20 text-white" : "bg-blue-100 text-blue-600"}`}>NOW</span>
-                    ) : (
-                      <span className="text-[8px] opacity-70 font-semibold">{t("time.forecast_short") || "예보"}</span>
-                    )}
-                  </button>
+                    <span className="text-[9px] font-extrabold text-slate-500">{t}</span>
+                    <span className="text-[10px] font-black text-slate-800 mt-1">
+                      {res ? `${Math.round(res.utci_personalized ?? res.utci ?? 0)}°` : "-"}
+                    </span>
+                    <span className="text-[8px] font-bold text-slate-400 mt-0.5 max-w-full truncate">
+                      {res?.recommendations?.clothing?.[0] || "대기"}
+                    </span>
+                  </div>
                 );
               })}
             </div>
@@ -1249,7 +1408,7 @@ export default function Dashboard() {
                         const firstSigungu = regions[newSido]?.[0] ?? "";
                         setSelectedSigungu(firstSigungu);
                         if (newSido && firstSigungu) {
-                          handleAnalyze({ sido: newSido, sigungu: firstSigungu });
+                          handleAnalyzeAllHours({ sido: newSido, sigungu: firstSigungu });
                         }
                       }}
                       className="w-full px-2 py-1 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none"
@@ -1267,7 +1426,7 @@ export default function Dashboard() {
                         const newSigungu = e.target.value;
                         setSelectedSigungu(newSigungu);
                         if (selectedSido && newSigungu) {
-                          handleAnalyze({ sigungu: newSigungu });
+                          handleAnalyzeAllHours({ sigungu: newSigungu });
                         }
                       }}
                       className="w-full px-2 py-1 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none"
