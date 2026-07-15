@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import main  # noqa: E402
 from auth import AuthenticatedUser, require_authenticated_user  # noqa: E402
+import db_client  # noqa: E402
 from weather_client import add_generic_utci  # noqa: E402
 
 
@@ -36,6 +37,17 @@ class ForecastCacheUnitTests(unittest.TestCase):
 
         self.assertEqual(len(enriched["utci"]), 2)
         self.assertTrue(all(isinstance(value, float) for value in enriched["utci"]))
+
+    @patch("db_client.get_weather_cache_client")
+    def test_location_seed_uses_server_only_client(self, mock_client_factory):
+        mock_client = mock_client_factory.return_value
+        mock_client.table.return_value.upsert.return_value.execute.return_value.data = []
+
+        seeded = db_client.seed_all_locations_into_db()
+
+        self.assertEqual(seeded, len(db_client.SEED_LOCATIONS))
+        mock_client.table.assert_called_once_with("location_dimension")
+        mock_client.table.return_value.upsert.assert_called_once()
 
 
 class PhaseContractTests(unittest.TestCase):

@@ -654,7 +654,7 @@ def get_all_location_coordinates() -> List[Dict[str, Any]]:
 
 def _get_all_location_coordinates_raw() -> List[Dict[str, Any]]:
     try:
-        response = supabase.table("location_dimension") \
+        response = get_weather_cache_client().table("location_dimension") \
             .select("id, sido, sigungu, latitude, longitude") \
             .execute()
         if response.data and len(response.data) > 0:
@@ -830,25 +830,26 @@ def upsert_historical_weather_fact(
 
 def seed_all_locations_into_db() -> int:
     """db_client에 정의된 SEED_LOCATIONS 82개 전국 거점을 location_dimension 테이블에 동기화 시딩합니다."""
-    success_count = 0
     print(f"📡 [Seeder] Starting DB synchronization for {len(SEED_LOCATIONS)} locations...")
-    for loc in SEED_LOCATIONS:
-        db_data = {
+    data = [
+        {
             "sido": loc["sido"],
             "sigungu": loc["sigungu"],
             "latitude": loc["latitude"],
-            "longitude": loc["longitude"]
+            "longitude": loc["longitude"],
         }
-        try:
-            supabase.table("location_dimension").upsert(
-                db_data, 
-                on_conflict="sido,sigungu"
-            ).execute()
-            success_count += 1
-        except Exception as e:
-            print(f"⚠️ [Seeder] Failed to seed location {loc['sido']} {loc['sigungu']}: {e}")
-    print(f"✅ [Seeder] Seeding finished. {success_count}/{len(SEED_LOCATIONS)} locations synced in DB.")
-    return success_count
+        for loc in SEED_LOCATIONS
+    ]
+    try:
+        get_weather_cache_client().table("location_dimension").upsert(
+            data,
+            on_conflict="sido,sigungu",
+        ).execute()
+        print(f"✅ [Seeder] Seeding finished. {len(data)}/{len(data)} locations synced in DB.")
+        return len(data)
+    except Exception as exc:
+        print(f"ERROR [location_dimension seed]: {exc}")
+        return 0
 
 
 
