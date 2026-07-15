@@ -256,17 +256,18 @@ flowchart LR
 
 `auth.users`는 Supabase Auth가 관리한다. 서비스 테이블의 `user_id`는 `auth.users.id`를 참조하고, 모든 개인 테이블에는 RLS를 활성화한다.
 
-| 테이블 | 목적 | 핵심 컬럼 |
+| 테이블 | 연결된 화면 기능 | 역할 |
 |---|---|---|
-| profiles | 공개하지 않는 사용자 프로필·개인화 설정 | user_id, height_cm, weight_kg, body_fat_pct, birth_year, sex, thermal_sensitivity, default_activity |
-| user_consents | 약관·개인정보·마케팅 동의 이력 | user_id, consent_type, policy_version, granted_at, revoked_at |
-| wardrobe_items | 사용자의 보유 의류 | id, user_id, category, subcategory, warmth_level, breathability, water_resistance, is_available |
-| saved_locations | 즐겨찾기 장소 | id, user_id, label, latitude, longitude, is_default |
-| feedback_events | 추천 후 체감 피드백 | id, user_id, recommendation_context, feedback, created_at |
-| recommendation_history | 재현 가능한 추천 이력 | id, user_id, request_context, result, created_at, expires_at |
-| weather_forecast_cache | 지역·시간별 기상 및 UTCI 캐시 | location_id, forecast_date, hourly_data, updated_at |
-| location_dimension | 기상 캐시 기준 위치 | id, sido, sigungu, latitude, longitude |
-| account_deletion_requests | 유예 삭제 요청 | user_id, requested_at, scheduled_delete_at, cancelled_at |
+| profiles | 설정 > 선택 개인화 정보 | 키·몸무게·체지방률·출생연도·활동·실내외 환경을 보관하고 추천 계산에 적용한다. |
+| user_consents | 회원가입 동의, 설정 | 약관·개인정보 처리방침·마케팅 수신 동의와 정책 버전을 보관한다. |
+| wardrobe_items | 옷장 탭 | 보유 의류와 보온성·방수·계절·세탁 상태를 저장하고 맞춤 착장에 우선 반영한다. |
+| recommendation_feedback | 홈 > 추천 체감 피드백 | 추움·좋음·더움 피드백을 저장해 이후 보온 선호를 조금씩 보정한다. |
+| user_locations | 홈 > 장소 선택 시트, 설정 > 즐겨찾는 장소 | 사용자가 저장한 장소 좌표를 보관해 해당 지역 분석을 빠르게 다시 연다. |
+| account_deletion_requests | 설정 > 데이터 및 계정 삭제 | 삭제 요청, 30일 유예 시점, 취소 여부를 관리한다. |
+| location_dimension | 홈 > 장소 선택 시트 | 서비스가 제공하는 공용 분석 지역과 좌표의 기준 목록이다. 개인 정보는 저장하지 않는다. |
+| weather_forecast_cache | 홈, 시간별 활동 탭 | 지역별 Open-Meteo 시간대 예보와 UTCI 결과를 캐시해 빠른 분석과 외부 API 호출 절감에 사용한다. |
+
+`006_schema_cleanup_and_table_descriptions.sql`은 위 8개 테이블에 PostgreSQL 설명(`COMMENT ON TABLE`)을 등록하고, 현재 UI/API가 사용하지 않는 `user_profile`, `user_feedback_log`, `historical_weather_fact`를 제거한다.
 
 ### 7.1 핵심 스키마 예시
 
@@ -320,15 +321,15 @@ FastAPI의 서비스 키는 RLS를 우회할 수 있으므로 브라우저에 �
 | Method | Path | 인증 | 역할 |
 |---|---|---:|---|
 | GET | `/health` | 아니오 | 서버 상태 확인 |
-| POST | `/api/v1/recommendations` | 선택 | 현재 조건의 의류·주의·근거 추천 |
+| POST | `/api/v1/recommendations` | 예 | 보유 의류·피드백을 반영한 현재 조건의 의류·주의·근거 추천 |
 | GET | `/api/v1/forecast` | 선택 | 위치·날짜 기준 시간별 예보와 활동 적합도 |
 | GET/PATCH | `/api/v1/me/profile` | 예 | 프로필 조회·수정 |
 | GET/POST | `/api/v1/me/wardrobe` | 예 | 옷장 조회·등록 |
 | PATCH/DELETE | `/api/v1/me/wardrobe/{item_id}` | 예 | 의류 수정·삭제 |
 | GET/POST | `/api/v1/me/locations` | 예 | 장소 조회·등록 |
 | PATCH/DELETE | `/api/v1/me/locations/{location_id}` | 예 | 장소 수정·삭제 |
-| POST | `/api/v1/me/feedback` | 예 | 체감 피드백 등록 |
-| POST | `/api/v1/me/data-export` | 예 | 데이터 내보내기 작업 요청 |
+| POST/DELETE | `/api/v1/me/recommendation-feedback` | 예 | 체감 피드백 등록·초기화 |
+| GET | `/api/v1/me/data-export` | 예 | 개인 데이터 JSON 내보내기 |
 | POST | `/api/v1/me/deletion-request` | 예 | 계정 삭제 유예 요청 |
 | DELETE | `/api/v1/me/deletion-request` | 예 | 유예 기간 내 삭제 취소 |
 

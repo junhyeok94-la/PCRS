@@ -21,19 +21,8 @@ CREATE TABLE IF NOT EXISTS weather_forecast_cache (
 );
 
 -- 3. 사용자 피드백 로그 테이블 생성 (개인 의류 단열 편향(CLO bias) 보정용)
-CREATE TABLE IF NOT EXISTS user_feedback_log (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR(100) NOT NULL,
-    feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('too_hot', 'too_cold', 'good')),
-    utci_calculated REAL,
-    temperature REAL,
-    clo_applied REAL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
 -- 인덱스 생성
 CREATE INDEX IF NOT EXISTS idx_weather_forecast_cache_updated ON weather_forecast_cache(updated_at);
-CREATE INDEX IF NOT EXISTS idx_user_feedback_log_user ON user_feedback_log(user_id, created_at DESC);
 
 -- 4. 기본 거점 시드 데이터 적재 (전국 주요 거점 예시 - 확장 가능)
 INSERT INTO location_dimension (sido, sigungu, latitude, longitude) 
@@ -123,33 +112,5 @@ VALUES
 ON CONFLICT (sido, sigungu) DO NOTHING;
 
 -- 5. 사용자 개인 스펙 프로필 테이블 생성 (OAuth 가입 정보와 연동)
-CREATE TABLE IF NOT EXISTS user_profile (
-    user_id VARCHAR(100) PRIMARY KEY, -- Supabase auth.users.id 매핑용
-    height REAL NOT NULL DEFAULT 171.0,
-    weight REAL NOT NULL DEFAULT 60.0,
-    age INTEGER NOT NULL DEFAULT 30,
-    body_fat REAL DEFAULT 22.0,
-    gender VARCHAR(10) NOT NULL DEFAULT 'female' CHECK (gender IN ('male', 'female')),
-    environment VARCHAR(20) NOT NULL DEFAULT 'outdoor' CHECK (environment IN ('indoor', 'outdoor')),
-    activity_level VARCHAR(20) NOT NULL DEFAULT 'walking' CHECK (activity_level IN ('sedentary', 'walking', 'cycling', 'running')),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
 -- 6. 역사/통계 날씨 팩트 테이블 (전처리된 월/일/시간대별 기후 요약 데이터 적재)
-CREATE TABLE IF NOT EXISTS historical_weather_fact (
-    id SERIAL PRIMARY KEY,
-    location_id INTEGER REFERENCES location_dimension(id) ON DELETE CASCADE,
-    weather_date DATE NOT NULL,
-    weather_hour INTEGER NOT NULL CHECK (weather_hour BETWEEN 0 AND 23),
-    temperature REAL NOT NULL,
-    humidity REAL NOT NULL,
-    wind_speed REAL NOT NULL,
-    solar_radiation REAL NOT NULL,
-    utci REAL NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(location_id, weather_date, weather_hour)
-);
-
-CREATE INDEX IF NOT EXISTS idx_historical_weather_date ON historical_weather_fact(weather_date);
-
 

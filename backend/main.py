@@ -2,6 +2,7 @@ import sys
 import os
 import math
 import datetime
+import json
 
 # Windows 콘솔 한글 및 이모지 출력 시 cp949 인코딩 오류 방지
 if sys.platform == 'win32':
@@ -10,10 +11,10 @@ if sys.platform == 'win32':
         sys.stderr.reconfigure(encoding='utf-8')
     except AttributeError:
         pass
-from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Query
+from typing import Literal, Optional, Dict, Any, List
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 # APScheduler imports
@@ -26,33 +27,44 @@ from db_client import (
     get_all_location_coordinates,
     get_weather_forecast_cache,
     upsert_weather_forecast_cache,
-    insert_user_feedback,
-    get_user_clo_bias,
-    get_user_profile,
-    upsert_user_profile,
-    upsert_historical_weather_fact,
+    get_phase1_consents,
+    get_phase1_profile,
+    upsert_phase1_consents,
+    upsert_phase1_profile,
+    get_wardrobe_items,
+    create_wardrobe_item,
+    archive_wardrobe_item,
+    update_wardrobe_item,
+    get_user_locations,
+    create_user_location,
+    update_user_location,
+    delete_user_location,
+    create_recommendation_feedback,
+    clear_recommendation_feedback,
+    get_recommendation_feedback_warmth_bias,
+    cancel_account_deletion,
+    execute_due_account_deletions,
+    export_user_data,
+    get_account_deletion_request,
+    get_admin_client,
+    request_account_deletion,
     seed_all_locations_into_db
 )
+from auth import AuthenticatedUser, require_authenticated_user
 from weather_client import get_weather_forecast_data, fetch_weather_forecast_from_api
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
 # ─────────────────────────────────────────────
 # 1. 로컬 피드백 폴백 캐시
 # ─────────────────────────────────────────────
-LOCAL_FEEDBACK_CACHE = {}
-
 def get_user_clo_bias_with_fallback(user_id: str) -> float:
-    db_bias = get_user_clo_bias(user_id) or 0.0
-    local_logs = LOCAL_FEEDBACK_CACHE.get(user_id, [])
-    if not local_logs:
-        return db_bias
-    total_bias = db_bias
-    for ftype in local_logs[-5:]:
-        if ftype == "too_hot":
-            total_bias -= 0.1
-        elif ftype == "too_cold":
-            total_bias += 0.1
-    return round(max(-0.3, min(0.3, total_bias)), 2)
+    """Guest recommendations intentionally have no persisted preference bias.
+
+    Signed-in recommendations use the RLS-protected recommendation_feedback
+    table instead. Keeping the guest baseline neutral avoids the retired legacy
+    feedback table and prevents unverified user IDs from influencing results.
+    """
+    return 0.0
 
 # ─────────────────────────────────────────────
 # 2. Haversine 거리 계산 함수
@@ -134,9 +146,10 @@ def run_weather_collect_batch():
             hourly_data=hourly_raw
         )
         
-        # 4. 시간대별(24h)로 개별 날씨 및 산출된 UTCI를 historical_weather_fact 테이블에 Staging 요약 적재
+        # Historical fact staging was retired: the forecast cache is the sole
+        # weather persistence layer used by the product.
         time_strings = hourly_raw.get("time", [])
-        for idx in range(min(24, len(temperatures))):
+        for idx in ():
             try:
                 # ISO 시간 문자열 파싱 (예: "2026-07-14T00:00" -> 날짜: "2026-07-14", 시간: 0)
                 t_str = time_strings[idx]
@@ -170,6 +183,13 @@ def run_weather_collect_batch():
     loop.close()
     print("⏰ [Batch] Weather collection batch task finished.")
 
+
+def run_account_deletion_batch():
+    """Run the irreversible cleanup only after the 30-day recovery window."""
+    completed = execute_due_account_deletions()
+    if completed:
+        print(f"🗑️ [Batch] Permanently deleted {completed} expired account(s).")
+
 # ─────────────────────────────────────────────
 # 4. FastAPI 라이프사이클 이벤트 (스케줄러 설정)
 # ─────────────────────────────────────────────
@@ -185,6 +205,7 @@ async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler()
     # 3시간마다 백그라운드 크론 실행 설정
     scheduler.add_job(run_weather_collect_batch, 'interval', hours=3, id='weather_collect_job')
+    scheduler.add_job(run_account_deletion_batch, 'interval', days=1, id='account_deletion_job')
     scheduler.start()
     print("🚀 Background scheduler started. Weather collect batch registered (every 3 hours).")
     
@@ -207,9 +228,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Browser clients must be explicitly trusted when Authorization headers and
+# credentials are used. Add the deployed web origin through CORS_ALLOW_ORIGINS.
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -251,6 +283,73 @@ class RecommendationRequest(BaseModel):
     longitude: float
     selected_hour: Optional[int] = None
     lang: Optional[str] = "ko"  # ko | en | ja
+
+
+class Phase1ProfileUpdateRequest(BaseModel):
+    """Optional onboarding fields; absent values deliberately stay unknown."""
+
+    height_cm: Optional[float] = Field(default=None, ge=100, le=250)
+    weight_kg: Optional[float] = Field(default=None, ge=25, le=300)
+    body_fat_pct: Optional[float] = Field(default=None, ge=3, le=70)
+    birth_year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    sex: Optional[Literal["female", "male", "undisclosed"]] = None
+    thermal_sensitivity: Optional[int] = Field(default=None, ge=-2, le=2)
+    default_activity: Optional[Literal[
+        "sedentary", "walking", "commute", "cycling", "running", "outdoor_work", "indoor_exercise"
+    ]] = None
+    default_environment: Optional[Literal["outdoor", "indoor", "mixed"]] = None
+    indoor_temperature_c: Optional[float] = Field(default=None, ge=10, le=35)
+
+
+class ConsentUpdateRequest(BaseModel):
+    policy_version: str = Field(min_length=1, max_length=64)
+    terms: bool
+    privacy: bool
+    marketing: bool = False
+
+
+class WardrobeItemCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    category: Literal["top", "bottom", "outerwear", "shoes", "accessory", "other"]
+    warmth_level: int = Field(default=0, ge=-2, le=2)
+    water_resistant: bool = False
+    is_favorite: bool = False
+    seasons: List[Literal["spring", "summer", "fall", "winter"]] = ["spring", "summer", "fall", "winter"]
+    is_in_laundry: bool = False
+
+
+class WardrobeItemUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    category: Optional[Literal["top", "bottom", "outerwear", "shoes", "accessory", "other"]] = None
+    warmth_level: Optional[int] = Field(default=None, ge=-2, le=2)
+    water_resistant: Optional[bool] = None
+    is_favorite: Optional[bool] = None
+    seasons: Optional[List[Literal["spring", "summer", "fall", "winter"]]] = None
+    is_in_laundry: Optional[bool] = None
+
+
+class UserLocationCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    is_favorite: bool = True
+
+
+class UserLocationUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    is_favorite: Optional[bool] = None
+
+
+class RecommendationFeedbackCreateRequest(BaseModel):
+    feedback_type: Literal["too_hot", "comfortable", "too_cold"]
+    utci_personalized: Optional[float] = Field(default=None, ge=-80, le=80)
+    activity: Optional[str] = Field(default=None, max_length=40)
+
+
+class AccountDeletionRequest(BaseModel):
+    confirmation_phrase: Literal["DELETE"]
 
 # ─────────────────────────────────────────────
 # 7. 개인화 생체 변수 및 오프셋 산출 헬퍼
@@ -359,8 +458,29 @@ def get_regions():
         }
     return {"regions": grouped}
 
+
+@app.get("/api/v1/locations")
+def get_location_catalog(query: str = Query(default="", max_length=80)):
+    """Return selectable forecast locations with coordinates for the client picker."""
+    locations = get_all_location_coordinates() or SEED_LOCATIONS
+    needle = query.strip().lower()
+    catalog = [
+        {
+            "id": str(location.get("id", f"{location['sido']}-{location['sigungu']}")),
+            "name": f"{location['sido']} {location['sigungu']}",
+            "sido": location["sido"],
+            "sigungu": location["sigungu"],
+            "latitude": float(location["latitude"]),
+            "longitude": float(location["longitude"]),
+        }
+        for location in locations
+        if not needle or needle in f"{location['sido']} {location['sigungu']}".lower()
+    ]
+    return {"locations": catalog}
+
 @app.post("/api/v1/feedback")
 def post_feedback(payload: FeedbackRequest):
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Legacy endpoint retired. Use /api/v1/me/recommendation-feedback.")
     """피드백 수신 및 로깅. RLS 제한 시 인메모리 캐시로 폴백."""
     res = insert_user_feedback(
         user_id=payload.user_id,
@@ -384,6 +504,7 @@ def post_feedback(payload: FeedbackRequest):
 
 @app.get("/api/v1/profile")
 def get_profile_endpoint(user_id: str = Query(..., description="조회할 사용자 고유 ID")):
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Legacy endpoint retired. Use /api/v1/me/profile.")
     """사용자 개인 신체 설정 조회"""
     profile = get_user_profile(user_id)
     if not profile:
@@ -405,6 +526,7 @@ def get_profile_endpoint(user_id: str = Query(..., description="조회할 사용
 
 @app.post("/api/v1/profile")
 def post_profile_endpoint(payload: UserProfileRequest):
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Legacy endpoint retired. Use PATCH /api/v1/me/profile.")
     """사용자 개인 신체 설정 저장 (Upsert)"""
     res = upsert_user_profile(
         user_id=payload.user_id,
@@ -422,6 +544,224 @@ def post_profile_endpoint(payload: UserProfileRequest):
         raise HTTPException(status_code=500, detail="프로필 정보 저장에 실패했습니다.")
     return {"status": "ok", "message": "프로필 정보가 저장되었습니다.", "profile": res}
 
+
+
+@app.get("/api/v1/me/profile")
+def get_my_profile(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    """Return only the caller's Phase 1 personalization profile."""
+    profile = get_phase1_profile(current_user.access_token, current_user.user_id)
+    return {
+        "status": "ok",
+        "profile": profile,
+        "onboarding_complete": profile is not None,
+    }
+
+
+@app.patch("/api/v1/me/profile")
+def update_my_profile(
+    payload: Phase1ProfileUpdateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    """Update the caller's optional personalization fields through RLS."""
+    if payload.birth_year is not None:
+        current_year = datetime.datetime.now(datetime.timezone.utc).year
+        if not current_year - 120 <= payload.birth_year <= current_year - 14:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="birth_year must represent an age between 14 and 120.",
+            )
+
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide at least one profile field to update.",
+        )
+
+    updated = upsert_phase1_profile(current_user.access_token, current_user.user_id, changes)
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Profile storage is unavailable. Confirm the Phase 1 migration has been applied.",
+        )
+    return {"status": "ok", "profile": updated}
+
+
+@app.get("/api/v1/me/consents")
+def get_my_consents(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    """Return the caller's recorded terms, privacy, and marketing choices."""
+    consents = get_phase1_consents(current_user.access_token, current_user.user_id)
+    return {"status": "ok", "consents": consents}
+
+
+@app.put("/api/v1/me/consents")
+def update_my_consents(
+    payload: ConsentUpdateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    """Record current consent state; terms and privacy are required for an account."""
+    if not payload.terms or not payload.privacy:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Terms and privacy consent are required.",
+        )
+
+    consents = upsert_phase1_consents(
+        current_user.access_token,
+        current_user.user_id,
+        payload.policy_version,
+        {"terms": payload.terms, "privacy": payload.privacy, "marketing": payload.marketing},
+    )
+    if consents is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Consent storage is unavailable. Confirm the Phase 1 migration has been applied.",
+        )
+    return {"status": "ok", "consents": consents}
+
+
+@app.get("/api/v1/me/wardrobe")
+def get_my_wardrobe(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    return {"status": "ok", "items": get_wardrobe_items(current_user.access_token, current_user.user_id)}
+
+
+@app.post("/api/v1/me/wardrobe", status_code=status.HTTP_201_CREATED)
+def add_my_wardrobe_item(
+    payload: WardrobeItemCreateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    item = create_wardrobe_item(current_user.access_token, current_user.user_id, payload.model_dump())
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Wardrobe storage is unavailable. Confirm the Phase 3 migration has been applied.")
+    return {"status": "ok", "item": item}
+
+
+@app.patch("/api/v1/me/wardrobe/{item_id}")
+def update_my_wardrobe_item(
+    item_id: str,
+    payload: WardrobeItemUpdateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provide at least one wardrobe field to update.")
+    item = update_wardrobe_item(current_user.access_token, current_user.user_id, item_id, changes)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
+    return {"status": "ok", "item": item}
+
+
+@app.delete("/api/v1/me/wardrobe/{item_id}")
+def remove_my_wardrobe_item(
+    item_id: str,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    if not archive_wardrobe_item(current_user.access_token, current_user.user_id, item_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/me/locations")
+def get_my_locations(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    return {"status": "ok", "locations": get_user_locations(current_user.access_token, current_user.user_id)}
+
+
+@app.post("/api/v1/me/locations", status_code=status.HTTP_201_CREATED)
+def add_my_location(
+    payload: UserLocationCreateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    location = create_user_location(current_user.access_token, current_user.user_id, payload.model_dump())
+    if location is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Location storage is unavailable. Confirm the saved locations migration has been applied.")
+    return {"status": "ok", "location": location}
+
+
+@app.patch("/api/v1/me/locations/{location_id}")
+def update_my_location(
+    location_id: str,
+    payload: UserLocationUpdateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provide at least one location field to update.")
+    location = update_user_location(current_user.access_token, current_user.user_id, location_id, changes)
+    if location is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved location was not found.")
+    return {"status": "ok", "location": location}
+
+
+@app.delete("/api/v1/me/locations/{location_id}")
+def remove_my_location(
+    location_id: str,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    if not delete_user_location(current_user.access_token, current_user.user_id, location_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved location was not found.")
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/me/recommendation-feedback", status_code=status.HTTP_201_CREATED)
+def add_recommendation_feedback(
+    payload: RecommendationFeedbackCreateRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    feedback = create_recommendation_feedback(current_user.access_token, current_user.user_id, payload.model_dump(exclude_none=True))
+    if feedback is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback storage is unavailable. Confirm the Phase 3 migration has been applied.")
+    return {
+        "status": "ok",
+        "feedback": feedback,
+        "warmth_bias": get_recommendation_feedback_warmth_bias(current_user.access_token, current_user.user_id),
+    }
+
+
+@app.delete("/api/v1/me/recommendation-feedback")
+def clear_my_recommendation_feedback(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    if not clear_recommendation_feedback(current_user.access_token, current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback reset is unavailable.")
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/me/data-export")
+def get_my_data_export(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    """Download currently stored personal data as a JSON attachment."""
+    exported = export_user_data(current_user.access_token, current_user.user_id)
+    if not exported:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Data export is unavailable. Confirm the database migrations have been applied.")
+    return Response(
+        content=json.dumps(exported, ensure_ascii=False, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=pcrs-data-export.json"},
+    )
+
+
+@app.get("/api/v1/me/deletion-request")
+def get_my_deletion_request(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    return {"status": "ok", "request": get_account_deletion_request(current_user.access_token, current_user.user_id)}
+
+
+@app.post("/api/v1/me/deletion-request", status_code=status.HTTP_202_ACCEPTED)
+def create_my_deletion_request(
+    payload: AccountDeletionRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    if get_admin_client() is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Account deletion is not configured on this deployment.")
+    if not current_user.recently_authenticated():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in again within 10 minutes before requesting account deletion.")
+    request = request_account_deletion(current_user.access_token, current_user.user_id)
+    if request is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Account deletion request storage is unavailable. Confirm the Phase 4 migration has been applied.")
+    return {"status": "ok", "request": request}
+
+
+@app.delete("/api/v1/me/deletion-request")
+def cancel_my_deletion_request(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
+    if not cancel_account_deletion(current_user.access_token, current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active deletion request was found.")
+    return {"status": "ok", "message": "Account deletion has been cancelled."}
 
 
 @app.post("/api/v1/recommend")
@@ -739,6 +1079,51 @@ async def get_recommendation(payload: RecommendationRequest):
         },
         "suitability": suitability_data
     }
+
+
+@app.post("/api/v1/recommendations")
+async def get_authenticated_recommendation(
+    payload: RecommendationRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    """Return a recommendation that safely prioritizes the member's own wardrobe.
+
+    The legacy public endpoint remains available for guests. This authenticated
+    endpoint derives the user ID solely from the verified JWT and uses RLS for
+    both wardrobe and feedback reads.
+    """
+    payload.profile.user_id = current_user.user_id
+    result = await get_recommendation(payload)
+    wardrobe = get_wardrobe_items(current_user.access_token, current_user.user_id)
+    warmth_bias = get_recommendation_feedback_warmth_bias(current_user.access_token, current_user.user_id)
+
+    # Start from weather demand, then make a deliberately small correction from
+    # feedback. Positive bias means the member has recently felt cold.
+    thermal_index = result["utci_personalized"]
+    target_warmth = 1 if thermal_index < 9 else -1 if thermal_index > 26 else 0
+    target_warmth = max(-2, min(2, target_warmth + warmth_bias))
+    month = datetime.datetime.now().month
+    current_season = "spring" if month in (3, 4, 5) else "summer" if month in (6, 7, 8) else "fall" if month in (9, 10, 11) else "winter"
+    available_items = [item for item in wardrobe if not item.get("is_in_laundry", False)]
+    in_season_items = [item for item in available_items if current_season in item.get("seasons", ["spring", "summer", "fall", "winter"])]
+    selected = sorted(
+        in_season_items or available_items,
+        key=lambda item: (
+            not item.get("is_favorite", False),
+            abs(float(item.get("warmth_level", 0)) - target_warmth),
+            item.get("category", "other"),
+        ),
+    )[:3]
+    if selected:
+        own_items = [f"내 옷장: {item['name']}" for item in selected]
+        result["recommendations"]["clothing"] = own_items + result["recommendations"]["clothing"]
+    result["personalization"] = {
+        "wardrobe_items_used": len(selected),
+        "feedback_warmth_bias": warmth_bias,
+        "target_warmth_level": target_warmth,
+        "current_season": current_season,
+    }
+    return result
 
 # ─────────────────────────────────────────────
 # 9. 로컬 실행용 엔트리포인트

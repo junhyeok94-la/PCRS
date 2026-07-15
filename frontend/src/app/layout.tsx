@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Outfit } from "next/font/google";
+import { PwaRegister } from "./PwaRegister";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -31,6 +32,7 @@ export default function RootLayout({
   return (
     <html lang="ko" className="h-full">
       <body className={`${geistSans.variable} ${geistMono.variable} ${outfit.variable} h-full antialiased`}>
+        <PwaRegister />
         {children}
       </body>
     </html>

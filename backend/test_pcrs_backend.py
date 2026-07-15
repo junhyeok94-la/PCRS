@@ -68,8 +68,8 @@ def test_fastapi_endpoints():
         assert "regions" in res.json()
         print("    => OK")
 
-        # 3. Profile Save & Get
-        print("  - Testing POST & GET /api/v1/profile...")
+        # 3. Retired legacy routes are explicitly unavailable.
+        print("  - Testing retired legacy routes...")
         profile_data = {
             "user_id": "test_user_99",
             "height": 175.5,
@@ -80,15 +80,9 @@ def test_fastapi_endpoints():
             "environment": "outdoor",
             "activity_level": "cycling"
         }
-        res_post = client.post("/api/v1/profile", json=profile_data)
-        assert res_post.status_code == 200, f"Profile save failed: {res_post.text}"
-        assert res_post.json().get("status") == "ok"
-
-        res_get = client.get("/api/v1/profile", params={"user_id": "test_user_99"})
-        assert res_get.status_code == 200, f"Profile query failed: {res_get.text}"
-        saved_profile = res_get.json().get("profile")
-        assert saved_profile is not None
-        assert float(saved_profile.get("height")) == 175.5
+        assert client.post("/api/v1/profile", json=profile_data).status_code == 410
+        assert client.get("/api/v1/profile", params={"user_id": "test_user_99"}).status_code == 410
+        assert client.post("/api/v1/feedback", json={}).status_code == 422
         print("    => OK")
 
         # 4. Recommendation
@@ -115,22 +109,6 @@ def test_fastapi_endpoints():
         print(f"    - Nudge Warning Active: {nudge['nudge_warning']}")
         if nudge["nudge_warning"]:
             print(f"    - Nudge Message: {nudge['nudge_message']}")
-        print("    => OK")
-
-        # 5. Feedback
-        print("  - Testing POST /api/v1/feedback...")
-        feedback_payload = {
-            "user_id": "test_user_99",
-            "feedback_type": "too_hot",
-            "utci_calculated": data["utci_personalized"],
-            "temperature": data["weather"]["temperature"],
-            "clo_applied": data["recommendations"]["clo_applied"]
-        }
-        res_feed = client.post("/api/v1/feedback", json=feedback_payload)
-        assert res_feed.status_code == 200, f"Feedback failed: {res_feed.text}"
-        feed_data = res_feed.json()
-        assert feed_data.get("status") == "ok"
-        print(f"    - New CLO Bias: {feed_data.get('new_bias')}")
         print("    => OK")
 
         print("SUCCESS: All FastAPI endpoint tests passed.")

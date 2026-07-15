@@ -1,1897 +1,868 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
-import { useTranslation } from "@/i18n/useTranslation";
-
-import { 
-  ComposedChart,
-  AreaChart,
-  Area,
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  Tooltip, 
-  ResponsiveContainer, 
-  ReferenceLine 
-} from "recharts";
-
-// ─── Recharts 선형 차트 커스텀 툴팁 컴포넌트 ───
-const CustomChartTooltip = ({ active, payload }: any) => {
-  if (active && payload && payload.length) {
-    const data = payload[0].payload;
-    return (
-      <div className="bg-slate-900/95 border border-slate-700/80 p-3 rounded-2xl shadow-xl backdrop-blur-md text-white flex flex-col gap-1.5 z-50">
-        <div className="flex justify-between items-center gap-4">
-          <span className="text-[10px] font-black text-blue-400">{data.time}</span>
-          <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full font-bold">
-            {data.sensation || "분석 완료"}
-          </span>
-        </div>
-        <div className="flex flex-col text-xs font-bold gap-0.5 mt-0.5">
-          <div className="flex justify-between gap-6 text-slate-300">
-            <span>체감 온도:</span>
-            <span className="text-white font-black">{data["체감 온도"]}°C</span>
-          </div>
-          <div className="flex justify-between gap-6 text-slate-400 text-[10px]">
-            <span>실제 기온:</span>
-            <span>{data["실제 기온"]}°C</span>
-          </div>
-        </div>
-        {data.clothing && data.clothing.length > 0 && (
-          <div className="border-t border-slate-800 pt-1.5 mt-1">
-            <span className="text-[9px] text-slate-400 uppercase tracking-wider font-bold">추천 착장</span>
-            <p className="text-[10px] text-indigo-300 font-extrabold mt-0.5 leading-snug">
-              {data.clothing.join(", ")}
-            </p>
-          </div>
-        )}
-
-      </div>
-    );
-  }
-  return null;
-};
-
-const SUPABASE_URL = "https://bdkvcrvmzeghburhcdut.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJka3ZjcnZtemVnaGJ1cmhjZHV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3MTI1OTEsImV4cCI6MjA5ODI4ODU5MX0.PVvfBdIbLmhOwhXN5vJc9kiNxPjkRTgwnO6JjgzU5P8";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-import { 
-  Thermometer, 
-  MapPin, 
-  Map, 
-  User, 
-  Wind, 
-  Sliders, 
-  Shirt, 
-  Droplet, 
-  AlertTriangle,
-  RotateCcw,
-  Sparkles,
-  Loader2,
-  Bell,
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createClient, Session, User } from "@supabase/supabase-js";
+import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Activity as ActivityIcon,
+  CalendarDays,
+  Check,
   ChevronRight,
-  ChevronDown,
-  HelpCircle,
-  Share2,
-  Globe,
-  Link2,
-  ImageDown,
+  CloudSun,
+  Droplets,
+  LogIn,
+  MapPin,
+  Menu,
+  Navigation,
+  Plus,
+  Search,
   Settings,
-  X
+  Shirt,
+  SlidersHorizontal,
+  Sparkles,
+  ThermometerSun,
+  Trash2,
+  Umbrella,
+  UserRound,
+  Wind,
+  X,
 } from "lucide-react";
 
-interface RecommendationData {
-  utci?: number;
-  utci_personalized?: number;
-  utci_category?: string;
-  pmv: number;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://bdkvcrvmzeghburhcdut.supabase.co";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJka3ZjcnZtemVnaGJ1cmhjZHV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3MTI1OTEsImV4cCI6MjA5ODI4ODU5MX0.PVvfBdIbLmhOwhXN5vJc9kiNxPjkRTgwnO6JjgzU5P8";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8002";
+const CONSENT_POLICY_VERSION = "2026-07-15";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+type Tab = "home" | "hourly" | "clothing" | "settings";
+type Activity = "sedentary" | "walking" | "commute" | "cycling" | "running" | "outdoor_work" | "indoor_exercise";
+type Environment = "outdoor" | "indoor" | "mixed";
+type Sex = "female" | "male" | "undisclosed";
+
+interface UserProfile {
+  height_cm: string;
+  weight_kg: string;
+  body_fat_pct: string;
+  birth_year: string;
+  sex: Sex;
+  thermal_sensitivity: number;
+  default_activity: Activity;
+  default_environment: Environment;
+  indoor_temperature_c: string;
+}
+
+interface Recommendation {
+  utci: number;
+  utci_personalized: number;
   thermal_sensation: string;
-  recommendations: {
-    clothing: string[];
-    activity: string;
-    hydration: string;
-    user_clo_bias?: number;
-    clo_applied?: number;
-    met_applied?: number;
-    avatar_state?: 'sweating' | 'hot' | 'slightly_hot' | 'comfortable' | 'slightly_cold' | 'cold' | 'shivering';
-    clothing_codes?: string[];
-  };
-  weather?: {
-    temperature: number;
-    humidity: number;
-    wind_speed: number;
-    apparent_temperature?: number;
-    uv_index?: number;
-    precipitation_probability?: number;
-    pm10?: number;
-    pm2_5?: number;
-    tmrt?: number;
-    source: string;
-  };
-  body_params?: {
-    bsa?: number;
-    met?: number;
-    age_offset?: number;
-    fat_offset?: number;
-  };
-  nudge?: {
-    nudge_warning: boolean;
-    nudge_message: string;
-    diff_temp: number;
-  };
-  suitability?: any[];
+  weather?: { temperature: number; humidity: number; wind_speed: number; precipitation_probability?: number };
+  recommendations: { clothing: string[]; hydration: string; activity: string };
+  nudge?: { nudge_warning: boolean; nudge_message: string };
+  suitability?: { name: string; score: number }[];
+  personalization?: { wardrobe_items_used: number; feedback_warmth_bias: number; target_warmth_level: number; current_season: string };
 }
 
-interface RegionMap {
-  [sido: string]: string[];
+interface WardrobeItem {
+  id: string;
+  name: string;
+  category: "top" | "bottom" | "outerwear" | "shoes" | "accessory" | "other";
+  warmth_level: number;
+  water_resistant: boolean;
+  is_favorite: boolean;
+  seasons: ("spring" | "summer" | "fall" | "winter")[];
+  is_in_laundry: boolean;
 }
 
-const getThemeStyles = (utciOrPmv: number | undefined) => {
-  if (utciOrPmv === undefined) {
-    return {
-      bg: "bg-slate-100",
-      gradientRight: "bg-blue-400/10",
-      gradientLeft: "bg-slate-300/20",
-      accent: "text-blue-500",
-      borderAccent: "border-blue-500/20",
-      button: "border-blue-600 hover:bg-blue-50 text-blue-600"
-    };
-  }
-  // UTCI 9단계 기준 테마 그라데이션
-  if (utciOrPmv > 38) {
-    // 매우 더움 (+3) - Intense Rose/Red
-    return {
-      bg: "bg-rose-50/50",
-      gradientRight: "bg-rose-500/20",
-      gradientLeft: "bg-red-400/25",
-      accent: "text-rose-600",
-      borderAccent: "border-rose-500/30",
-      button: "border-rose-600 hover:bg-rose-50 text-rose-600"
-    };
-  } else if (utciOrPmv > 26) {
-    // 보통 열 스트레스 - Orange
-    return {
-      bg: "bg-orange-50/40",
-      gradientRight: "bg-orange-400/15",
-      gradientLeft: "bg-amber-400/15",
-      accent: "text-orange-600",
-      borderAccent: "border-orange-500/20",
-      button: "border-orange-600 hover:bg-orange-50 text-orange-600"
-    };
-  } else if (utciOrPmv > 9) {
-    // 쾌적 - Emerald
-    return {
-      bg: "bg-emerald-50/40",
-      gradientRight: "bg-emerald-400/15",
-      gradientLeft: "bg-teal-300/20",
-      accent: "text-emerald-600",
-      borderAccent: "border-emerald-500/20",
-      button: "border-emerald-600 hover:bg-emerald-50 text-emerald-600"
-    };
-  } else if (utciOrPmv >= 0) {
-    // 약간 추운 - Teal/Cyan
-    return {
-      bg: "bg-teal-50/30",
-      gradientRight: "bg-teal-400/10",
-      gradientLeft: "bg-cyan-300/10",
-      accent: "text-teal-600",
-      borderAccent: "border-teal-500/15",
-      button: "border-teal-600 hover:bg-teal-50 text-teal-600"
-    };
-  } else if (utciOrPmv >= -13) {
-    // 추운 - Sky/Blue
-    return {
-      bg: "bg-sky-50/40",
-      gradientRight: "bg-sky-400/15",
-      gradientLeft: "bg-blue-400/15",
-      accent: "text-sky-600",
-      borderAccent: "border-sky-500/20",
-      button: "border-sky-600 hover:bg-sky-50 text-sky-600"
-    };
-  } else {
-    // 매우 추운 - Indigo/Purple
-    return {
-      bg: "bg-indigo-50/50",
-      gradientRight: "bg-indigo-500/20",
-      gradientLeft: "bg-purple-400/25",
-      accent: "text-indigo-600",
-      borderAccent: "border-indigo-500/30",
-      button: "border-indigo-600 hover:bg-indigo-50 text-indigo-600"
-    };
-  }
+interface SavedLocation {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  is_favorite: boolean;
+}
+
+interface LocationOption {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  sido?: string;
+  sigungu?: string;
+  is_favorite?: boolean;
+}
+
+interface SelectedLocation {
+  latitude: number;
+  longitude: number;
+  label: string;
+}
+
+const emptyProfile: UserProfile = {
+  height_cm: "",
+  weight_kg: "",
+  body_fat_pct: "",
+  birth_year: "",
+  sex: "undisclosed",
+  thermal_sensitivity: 0,
+  default_activity: "walking",
+  default_environment: "outdoor",
+  indoor_temperature_c: "",
 };
 
-export default function Dashboard() {
-  // i18n
-  const { lang, setLang, t, tSido, tSigungu, langs, langLabels } = useTranslation();
+const activityLabels: Record<Activity, string> = {
+  sedentary: "휴식",
+  walking: "가벼운 걷기",
+  commute: "출퇴근",
+  cycling: "자전거",
+  running: "러닝",
+  outdoor_work: "야외 작업",
+  indoor_exercise: "실내 운동",
+};
 
-  // URL 파라미터로부터 초기 상태 복원
-  const getUrlParam = (key: string, fallback: string) => {
-    if (typeof window === "undefined") return fallback;
-    return new URLSearchParams(window.location.search).get(key) ?? fallback;
-  };
+const environmentLabels: Record<Environment, string> = {
+  outdoor: "외부 활동",
+  indoor: "실내 활동",
+  mixed: "실내외 혼합",
+};
 
-  // Profile state
-  const [height, setHeight] = useState<string>(() => getUrlParam("h", "171"));
-  const [weight, setWeight] = useState<string>(() => getUrlParam("w", "60"));
-  const [age, setAge] = useState<string>(() => getUrlParam("age", "28"));           // [신설] 나이
-  const [bodyFat, setBodyFat] = useState<string>(() => getUrlParam("bf", "22"));
-  const [gender, setGender] = useState<string>(() => getUrlParam("g", "female"));
-  const [environment, setEnvironment] = useState<"indoor" | "outdoor">(() => getUrlParam("env", "outdoor") as "indoor" | "outdoor");
-  const [activityLevel, setActivityLevel] = useState<string>(() => getUrlParam("act", "walking")); // [신설] 활동 수준
-  const [showQuickProfile, setShowQuickProfile] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"home" | "hourly" | "clothing" | "settings">("home");
+function formatError(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
 
-  // Body fat guide state
-  const [showBodyFatGuide, setShowBodyFatGuide] = useState<boolean>(false);
-  const [guideGenderTab, setGuideGenderTab] = useState<string>("male");
-  const [gpsLoading, setGpsLoading] = useState<boolean>(false);
-  const [userLatitude, setUserLatitude] = useState<number>(37.5264); // 서울 영등포구 기본값
-  const [userLongitude, setUserLongitude] = useState<number>(126.8962);
+function parseOptionalNumber(value: string) {
+  return value.trim() === "" ? undefined : Number(value);
+}
 
-  // 전국 거점 위경도 매핑 테이블 (시도 + 시군구 조합)
-  const LOCATION_COORDINATES: Record<string, { lat: number; lon: number }> = {
-    "서울특별시_강남구": { lat: 37.5172, lon: 127.0473 },
-    "서울특별시_서초구": { lat: 37.4836, lon: 127.0327 },
-    "서울특별시_송파구": { lat: 37.5145, lon: 127.1059 },
-    "서울특별시_마포구": { lat: 37.5638, lon: 126.9084 },
-    "서울특별시_종로구": { lat: 37.5735, lon: 126.9790 },
-    "서울특별시_영등포구": { lat: 37.5264, lon: 126.8962 },
-    "경기도_수원시": { lat: 37.2636, lon: 127.0286 },
-    "경기도_성남시": { lat: 37.4449, lon: 127.1389 },
-    "부산광역시_해운대구": { lat: 35.1631, lon: 129.1636 },
-    "인천광역시_중구": { lat: 37.4728, lon: 126.6238 },
-    "대구광역시_중구": { lat: 35.8694, lon: 128.6062 },
-    "광주광역시_동구": { lat: 35.1461, lon: 126.9231 },
-    "대전광역시_중구": { lat: 36.3250, lon: 127.4208 },
-    "울산광역시_남구": { lat: 35.5437, lon: 129.3300 },
-    "세종특별자치시_세종시": { lat: 36.4800, lon: 127.2890 },
-    "제주특별자치도_제주시": { lat: 33.5006, lon: 126.5312 },
-  };
-
-  // [신설] Supabase Auth & Guest 세션 상태
-  const [userId, setUserId] = useState<string>("");
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
-  const [authEmail, setAuthEmail] = useState<string>("");
-  const [authPassword, setAuthPassword] = useState<string>("");
-  const [isSignUp, setIsSignUp] = useState<boolean>(false);
+export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<Tab>("home");
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [profileReady, setProfileReady] = useState(false);
+  const initialAnalysisStarted = useRef(false);
+  const [profile, setProfile] = useState<UserProfile>(emptyProfile);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"signIn" | "signUp">("signIn");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [marketingAccepted, setMarketingAccepted] = useState(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [busy, setBusy] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
+  const [hourlyRecommendations, setHourlyRecommendations] = useState<Record<number, Recommendation>>({});
+  const [recommendationError, setRecommendationError] = useState<string | null>(null);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [selectedFeedback, setSelectedFeedback] = useState<"too_hot" | "comfortable" | "too_cold" | null>(null);
+  const [wardrobeItems, setWardrobeItems] = useState<WardrobeItem[]>([]);
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
+  const [locationCatalog, setLocationCatalog] = useState<LocationOption[]>([]);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false);
+  const [wardrobeMessage, setWardrobeMessage] = useState<string | null>(null);
+  const [location, setLocation] = useState<SelectedLocation>({ latitude: 37.5264, longitude: 126.8962, label: "서울 영등포구" });
 
-  // Region selection state
-  const [regions, setRegions] = useState<RegionMap>({});
-  const [selectedSido, setSelectedSido] = useState<string>("서울특별시");
-  const [selectedSigungu, setSelectedSigungu] = useState<string>("강남구");
-
-  // Map and weather state
-  // 현재 시각 기준으로 전 2시간 ~ 후 2시간 총 5개 슬롯을 동적 생성
-  const getCurrentHourStr = () => {
-    const h = new Date().getHours();
-    return `${String(h).padStart(2, "0")}:00`;
-  };
-  const buildTimeSlotsAroundNow = () => {
-    const h = new Date().getHours();
-    return Array.from({ length: 5 }, (_, i) => {
-      const slot = (h - 2 + i + 24) % 24;
-      return `${String(slot).padStart(2, "0")}:00`;
-    });
-  };
-  const [selectedTime, setSelectedTime] = useState<string>(getCurrentHourStr);
-  const [isLocationModalOpen, setIsLocationModalOpen] = useState<boolean>(false);
-  const [times] = useState<string[]>(buildTimeSlotsAroundNow);
-
-  // Feedback toast state
-  const [feedbackToast, setFeedbackToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
-
-  // API response and UI state
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [result, setResult] = useState<RecommendationData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [hourlyResults, setHourlyResults] = useState<Record<string, RecommendationData>>({});
-  const [hourlyLoading, setHourlyLoading] = useState<boolean>(false);
-
-  const theme = getThemeStyles(result?.pmv);
-
-  // 실시간 기상 경보/특보 판단 헬퍼
-  const getWeatherAlerts = (): { title: string; desc: string; type: "warning" | "danger" }[] => {
-    if (!result || !result.weather) return [];
-    const t = result.weather.temperature;
-    const w = result.weather.wind_speed;
-    const h = result.weather.humidity;
-    const alerts = [];
-
-    if (t >= 33) {
-      alerts.push({
-        title: "🥵 폭염 특보 (Extreme Heat)",
-        desc: "실외 활동 시 일사병 위험이 높으니 충분히 수분을 섭취하세요.",
-        type: "danger" as const
-      });
-    } else if (t <= -10) {
-      alerts.push({
-        title: "🥶 한파 특보 (Extreme Cold)",
-        desc: "동상 및 저체온증 위험이 있으니 외출 시 방한 의류를 철저히 갖추세요.",
-        type: "danger" as const
-      });
-    }
-
-    if (w >= 10.0) {
-      alerts.push({
-        title: "🌬️ 강풍 주의보 (High Wind)",
-        desc: "바람이 매우 강해 체온이 급격히 떨어질 수 있으니 야외 체류 시 방풍 아우터를 챙기세요.",
-        type: "warning" as const
-      });
-    }
-
-    if (h >= 90 && t >= 29) {
-      alerts.push({
-        title: "💦 고온다습 불쾌경보",
-        desc: "습도가 90% 이상으로 열 배출이 어렵습니다. 격렬한 신체 활동을 자제하세요.",
-        type: "warning" as const
-      });
-    }
-
-    return alerts;
-  };
-
-
-
-  // 0. 사용자 세션 초기화 (Guest & Auth 결합)
   useEffect(() => {
-    // 1) 현재 로그인된 정식 세션 체크
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session && session.user) {
-        setUserId(session.user.id);
-        setUserEmail(session.user.email ?? null);
-      } else {
-        // 비로그인 시 LocalStorage 게스트 세션 로드/발급
-        let guestId = localStorage.getItem("guest_user_id");
-        if (!guestId) {
-          guestId = "guest_" + Math.random().toString(36).substring(2, 11) + "_" + Date.now();
-          localStorage.setItem("guest_user_id", guestId);
-        }
-        setUserId(guestId);
-        setUserEmail(null);
-      }
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      setUser(data.session?.user ?? null);
+      setAuthResolved(true);
     });
-
-    // 2) Auth 상태 변동 리스너 등록
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session && session.user) {
-        setUserId(session.user.id);
-        setUserEmail(session.user.email ?? null);
-      } else {
-        let guestId = localStorage.getItem("guest_user_id");
-        if (!guestId) {
-          guestId = "guest_" + Math.random().toString(36).substring(2, 11) + "_" + Date.now();
-          localStorage.setItem("guest_user_id", guestId);
-        }
-        setUserId(guestId);
-        setUserEmail(null);
-      }
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      initialAnalysisStarted.current = false;
+      setProfileReady(false);
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
+      setAuthResolved(true);
     });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
-  // ① 지역 목록 초기 로드
   useEffect(() => {
-    fetch("http://localhost:8002/api/v1/regions")
-      .then((r) => r.json())
-      .then((data) => {
-        setRegions(data.regions || {});
+    let mounted = true;
+    void fetch(`${API_BASE_URL}/api/v1/locations`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("장소 목록을 불러오지 못했습니다.");
+        return await response.json() as { locations: LocationOption[] };
       })
-      .catch(() => {
-        // fallback: 백엔드 연결 실패 시 기본값 사용
-        setRegions({ "서울특별시": ["강남구", "마포구", "서초구", "송파구", "종로구"] });
-      });
+      .then((data) => { if (mounted) setLocationCatalog(data.locations); })
+      .catch((error: unknown) => { if (mounted) setRecommendationError(formatError(error, "장소 목록을 불러오지 못했습니다.")); });
+    return () => { mounted = false; };
   }, []);
 
-  // ② 시도 변경 시 시군구 첫 번째 값으로 자동 설정
-  useEffect(() => {
-    if (regions[selectedSido] && regions[selectedSido].length > 0) {
-      const firstSigungu = regions[selectedSido][0];
-      setSelectedSigungu(firstSigungu);
-      
-      const lookupKey = `${selectedSido}_${firstSigungu}`;
-      const coords = LOCATION_COORDINATES[lookupKey];
-      if (coords) {
-        setUserLatitude(coords.lat);
-        setUserLongitude(coords.lon);
-      }
-    }
-  }, [selectedSido, regions]);
+  async function persistPendingConsents(accessToken: string) {
+    const pending = localStorage.getItem("pcrs_pending_consents");
+    if (!pending) return;
+    const choices: { terms: boolean; privacy: boolean; marketing: boolean } = JSON.parse(pending);
+    const response = await fetch(`${API_BASE_URL}/api/v1/me/consents`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ ...choices, policy_version: CONSENT_POLICY_VERSION }),
+    });
+    if (response.ok) localStorage.removeItem("pcrs_pending_consents");
+  }
 
-  // 시군구 변경 시 좌표 업데이트
-  useEffect(() => {
-    const lookupKey = `${selectedSido}_${selectedSigungu}`;
-    const coords = LOCATION_COORDINATES[lookupKey];
-    if (coords) {
-      setUserLatitude(coords.lat);
-      setUserLongitude(coords.lon);
-    }
-  }, [selectedSigungu]);
-
-  // ③ 페이지 첫 진입 및 사용자 로그인 전환 시 자동 분석 실행
-  useEffect(() => {
-    if (Object.keys(regions).length > 0 && userId) {
-      handleAnalyzeAllHours();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [regions, userId]);
-
-  // ④ 신체 스펙 및 파라미터 변경 시 디바운스 분석 실행 (실시간 반응감 극대화)
-  // * selectedTime은 의도적으로 제외하여, 시간대 스위칭 시 불필요한 네트워크 fetch를 차단함
-  useEffect(() => {
-    if (Object.keys(regions).length === 0 || !userId) return;
-    const delayDebounce = setTimeout(() => {
-      handleAnalyzeAllHours();
-    }, 350);
-    return () => clearTimeout(delayDebounce);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height, weight, age, bodyFat, gender, environment, activityLevel, selectedSido, selectedSigungu]);
-
-  // ⑤ 시간대 변경 시 로컬에서 즉시 맵핑하여 지연 시간(0ms) 제거
-  useEffect(() => {
-    if (hourlyResults[selectedTime]) {
-      setResult(hourlyResults[selectedTime]);
-    }
-  }, [selectedTime, hourlyResults]);
-
-  const handleAnalyzeAllHours = async (
-    overrides?: { sido?: string; sigungu?: string; gender?: string; environment?: string; bodyFat?: string }
-  ) => {
-    if (!userId) return;
-    setIsLoading(true);
-    setHourlyLoading(true);
-    setError(null);
+  async function loadProfile() {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
     try {
-      const sido = overrides?.sido ?? selectedSido;
-      const sigungu = overrides?.sigungu ?? selectedSigungu;
-      const genderVal = overrides?.gender ?? gender;
-      const envVal = overrides?.environment ?? environment;
-      const bodyFatVal = overrides?.bodyFat ?? bodyFat;
-
-      // 5개 예보 시간대 전체를 병렬 비동기 호출
-      // 현재 sido, sigungu를 통해 로컬에서 구한 대표 좌표값 확인
-      const lookupKey = `${sido}_${sigungu}`;
-      const defaultCoords = LOCATION_COORDINATES[lookupKey] || { lat: 37.5264, lon: 126.8962 };
-      
-      // GPS가 켜져서 해당 지역이 선택되어 있으면 상태 위경도를 쓰고, 아니면 거점 위경도를 활용
-      const targetLat = (sido === selectedSido && sigungu === selectedSigungu) ? userLatitude : defaultCoords.lat;
-      const targetLon = (sido === selectedSido && sigungu === selectedSigungu) ? userLongitude : defaultCoords.lon;
-
-      const promises = times.map(async (timeStr) => {
-        const parsedHour = parseInt(timeStr.split(":")[0]);
-        const response = await fetch("http://localhost:8002/api/v1/recommend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            profile: {
-              user_id: userId,
-              height: parseFloat(height) || 171,
-              weight: parseFloat(weight) || 60,
-              age: parseInt(age) || 28,
-              body_fat: bodyFatVal ? parseFloat(bodyFatVal) : null,
-              gender: genderVal,
-              environment: envVal,
-              activity_level: activityLevel,
-            },
-            latitude: targetLat,
-            longitude: targetLon,
-            sido,
-            sigungu,
-            selected_hour: parsedHour,
-            lang,
-          }),
+      await persistPendingConsents(session.access_token);
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/profile`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!response.ok) throw new Error("프로필을 불러올 수 없습니다. DB 마이그레이션 적용 여부를 확인해 주세요.");
+      const data: { profile: Partial<Record<keyof UserProfile, string | number>> | null } = await response.json();
+      if (data.profile) {
+        setProfile({
+          height_cm: String(data.profile.height_cm ?? ""),
+          weight_kg: String(data.profile.weight_kg ?? ""),
+          body_fat_pct: String(data.profile.body_fat_pct ?? ""),
+          birth_year: String(data.profile.birth_year ?? ""),
+          sex: (data.profile.sex as Sex | undefined) ?? "undisclosed",
+          thermal_sensitivity: Number(data.profile.thermal_sensitivity ?? 0),
+          default_activity: (data.profile.default_activity as Activity | undefined) ?? "walking",
+          default_environment: (data.profile.default_environment as Environment | undefined) ?? "outdoor",
+          indoor_temperature_c: String(data.profile.indoor_temperature_c ?? ""),
         });
-
-        if (!response.ok) throw new Error(`${timeStr} 예보 조회를 실패했습니다.`);
-        const data = await response.json();
-        return {
-          time: timeStr,
-          data: {
-            utci: data.utci,
-            utci_personalized: data.utci_personalized,
-            utci_category: data.utci_category,
-            pmv: data.pmv ?? data.utci_personalized,
-            thermal_sensation: data.thermal_sensation,
-            recommendations: data.recommendations,
-            weather: data.weather,
-            body_params: data.body_params,
-          } as RecommendationData,
-        };
-      });
-
-      const resultsList = await Promise.all(promises);
-      const resultsMap: Record<string, RecommendationData> = {};
-      resultsList.forEach((item) => {
-        resultsMap[item.time] = item.data;
-      });
-
-      setHourlyResults(resultsMap);
-
-      // 현재 선택되어 있는 시간대의 결과 매칭
-      const currentResult = resultsMap[selectedTime];
-      if (currentResult) {
-        setResult(currentResult);
       }
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "서버 통신 실패");
+      setSaveMessage("계정 프로필을 불러왔습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "프로필을 불러오지 못했습니다."));
     } finally {
-      setIsLoading(false);
-      setHourlyLoading(false);
+      setProfileReady(true);
+      setBusy(false);
     }
-  };
+  }
 
-  const handleQuickFillBodyFat = (value: string) => {
-    setBodyFat(value);
-    setShowBodyFatGuide(false);
-    handleAnalyzeAllHours({ bodyFat: value });
-  };
-
-  const handleGPSLocation = () => {
-    if (!navigator.geolocation) {
-      alert("GPS 위치 정보 서비스를 지원하지 않는 브라우저입니다.");
+  async function saveProfile() {
+    if (!session) {
+      setAuthMode("signIn");
+      setAuthOpen(true);
       return;
     }
-    setGpsLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        try {
-          const response = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
-            {
-              headers: {
-                "Accept-Language": "ko-KR,ko;q=0.9"
-              }
-            }
-          );
-          if (!response.ok) throw new Error("역지오코딩 서비스 응답 실패");
-          const data = await response.json();
-          if (data && data.address) {
-            const address = data.address;
-            const rawSido = address.province || address.city || address.state || "";
-            const rawSigungu = address.borough || address.suburb || address.city_district || address.district || address.county || "";
-            
-            const matchSido = Object.keys(regions).find(s => 
-              s.includes(rawSido) || rawSido.includes(s)
-            );
-            
-            if (matchSido) {
-              const sigungus = regions[matchSido] || [];
-              const matchSigungu = sigungus.find(g => 
-                g.includes(rawSigungu) || rawSigungu.includes(g)
-              );
-              
-              if (matchSigungu) {
-                setSelectedSido(matchSido);
-                setSelectedSigungu(matchSigungu);
-                setUserLatitude(lat);
-                setUserLongitude(lon);
-                // 강제로 lat, lon 상태를 API 파라미터로 넘겨 분석
-                handleAnalyzeAllHours({ sido: matchSido, sigungu: matchSigungu });
-                alert(`현재 위치가 [${matchSido} ${matchSigungu}]로 설정되었습니다. (좌표: ${lat.toFixed(4)}, ${lon.toFixed(4)})`);
-              } else {
-                setSelectedSido(matchSido);
-                const fallbackGu = sigungus[0] || "";
-                setSelectedSigungu(fallbackGu);
-                setUserLatitude(lat);
-                setUserLongitude(lon);
-                handleAnalyzeAllHours({ sido: matchSido, sigungu: fallbackGu });
-                alert(`현재 위치 시도 [${matchSido}]가 설정되었으나 상세 구[${rawSigungu}] 매칭이 제한되어 근사 구[${fallbackGu}]로 매핑되었습니다. (좌표: ${lat.toFixed(4)}, ${lon.toFixed(4)})`);
-              }
-            } else {
-              alert(`식별된 위치 [${rawSido} ${rawSigungu}]가 서비스 범위 외 지역이거나 지원되지 않습니다.`);
-            }
-          } else {
-            alert("현재 위치의 주소 분석에 실패했습니다.");
-          }
-        } catch (err) {
-          console.error("GPS Geocoding error:", err);
-          alert("네트워크 통신 중 주소 분석 오류가 발생했습니다.");
-        } finally {
-          setGpsLoading(false);
-        }
-      },
-      (error) => {
-        console.error("GPS position error:", error);
-        let errorMsg = "위치 정보를 가져오지 못했습니다.";
-        if (error.code === error.PERMISSION_DENIED) {
-          errorMsg = "위치 정보 허용 권한이 거부되었습니다. 브라우저 권한 설정을 확인하세요.";
-        }
-        alert(errorMsg);
-        setGpsLoading(false);
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
-  };
-
-  const getSummarySentence = () => {
-    if (!result) return "";
-    const genderText = gender === "male" 
-      ? (lang === "ko" ? "남성" : lang === "en" ? "Male" : "男性")
-      : (lang === "ko" ? "여성" : lang === "en" ? "Female" : "女性");
-    const envText = environment === "outdoor"
-      ? (lang === "ko" ? "실외 자연풍" : lang === "en" ? "Outdoor natural wind" : "屋外自然風")
-      : (lang === "ko" ? "실내 공조(HVAC) 차단" : lang === "en" ? "Indoor HVAC active" : "室内空調（HVAC）");
-    const bodyFatText = bodyFat 
-      ? (lang === "ko" ? `체지방률 ${bodyFat}%` : lang === "en" ? `Body fat ${bodyFat}%` : `体脂肪率 ${bodyFat}%`)
-      : (lang === "ko" ? "평균 체지방" : lang === "en" ? "Average body fat" : "平均体脂肪");
-      
-    const pmvVal = result.pmv;
-    let sensationDesc = "";
-    
-    if (lang === "ko") {
-      if (pmvVal >= 2.5) sensationDesc = "매우 더운 극한 열 스트레스 (+3)";
-      else if (pmvVal >= 1.5) sensationDesc = "더운 주의 수준의 열 부하 (+2)";
-      else if (pmvVal >= 0.5) sensationDesc = "약간 더운 온열감 (+1)";
-      else if (pmvVal > -0.5) sensationDesc = "열적으로 쾌적하고 안정된 감각 (0)";
-      else if (pmvVal > -1.5) sensationDesc = "약간 추운 선선한 상태 (-1)";
-      else if (pmvVal > -2.5) sensationDesc = "추운 냉기 부하 (-2)";
-      else sensationDesc = "매우 추운 극한 한랭 스트레스 (-3)";
-    } else if (lang === "en") {
-      if (pmvVal >= 2.5) sensationDesc = "Very Hot (Extreme Heat Stress, +3)";
-      else if (pmvVal >= 1.5) sensationDesc = "Warm (Heat Load Alert, +2)";
-      else if (pmvVal >= 0.5) sensationDesc = "Slightly Warm (+1)";
-      else if (pmvVal > -0.5) sensationDesc = "Thermally Comfortable & Stable (0)";
-      else if (pmvVal > -1.5) sensationDesc = "Slightly Cool (-1)";
-      else if (pmvVal > -2.5) sensationDesc = "Cool/Cold Sensation (-2)";
-      else sensationDesc = "Very Cold (Extreme Cold Stress, -3)";
-    } else {
-      if (pmvVal >= 2.5) sensationDesc = "非常に暑い 極度の熱ストレス (+3)";
-      else if (pmvVal >= 1.5) sensationDesc = "暑い 注意レベルの熱負荷 (+2)";
-      else if (pmvVal >= 0.5) sensationDesc = "やや暑い 温熱感 (+1)";
-      else if (pmvVal > -0.5) sensationDesc = "熱的に快適で安定した感覚 (0)";
-      else if (pmvVal > -1.5) sensationDesc = "やや涼しい 涼感状態 (-1)";
-      else if (pmvVal > -2.5) sensationDesc = "涼しい / 寒い 冷気負荷 (-2)";
-      else sensationDesc = "非常に寒い 極度の冷気ストレス (-3)";
-    }
-
-    if (lang === "ko") {
-      return `현재 ${selectedSido} ${selectedSigungu}의 날씨(기온 ${result.weather?.temperature.toFixed(1)}°C, 습도 ${result.weather?.humidity}%, 풍속 ${result.weather?.wind_speed.toFixed(1)}m/s)와 사용자님의 신체 스펙(신장 ${height}cm, 체중 ${weight}kg, ${genderText}, ${bodyFatText}) 및 ${envText} 환경 조건이 결합되었습니다. 이에 따라 계산된 체감 PMV 지수는 ${pmvVal > 0 ? `+${pmvVal}` : pmvVal}로, '${sensationDesc}' 상태를 보이고 있습니다.`;
-    } else if (lang === "en") {
-      return `Current weather in ${tSido(selectedSido)} ${tSigungu(selectedSigungu)} (Temp ${result.weather?.temperature.toFixed(1)}°C, Humidity ${result.weather?.humidity}%, Wind ${result.weather?.wind_speed.toFixed(1)}m/s) combined with your body specifications (Height ${height}cm, Weight ${weight}kg, ${genderText}, ${bodyFatText}) and ${envText} environment conditions. The calculated PMV is ${pmvVal > 0 ? `+${pmvVal}` : pmvVal}, showing a status of '${sensationDesc}'.`;
-    } else {
-      return `現在の${tSido(selectedSido)} ${tSigungu(selectedSigungu)}の天気（気温 ${result.weather?.temperature.toFixed(1)}°C、湿度 ${result.weather?.humidity}%、風速 ${result.weather?.wind_speed.toFixed(1)}m/s）と、ユーザー様の体型スペック（身長 ${height}cm、体重 ${weight}kg、${genderText}、${bodyFatText}）および${envText}環境条件が結合されました。これに基づき計算されたPMV指数は ${pmvVal > 0 ? `+${pmvVal}` : pmvVal} で、現在「${sensationDesc}」状態を示しています。`;
-    }
-  };
-
-  // PMV 기반 유사 신체 스펙 추천 카드 동적 데이터 (7단계 척도 다국어)
-  const getSimilarUserRecommendations = () => {
-    if (!result) return null;
-    const pmv = result.pmv;
-    
-    const RECS = {
-      "ko": {
-        "p3": {
-          clothing: { icon: "👕", label: "냉감 기능성 웨어", badge: "93% 극열기 선택", color: "red" },
-          hydration: { icon: "💧", label: "이온 전해질 음료", badge: "88% 보충 권장", color: "blue" },
-          activity: { icon: "⚠️", label: "격렬한 실외 자제", badge: "97% 실내 권장", color: "orange", chevron: true }
-        },
-        "p2": {
-          clothing: { icon: "👕", label: "린넨 반팔 아웃핏", badge: "81% 선호도 득표", color: "blue" },
-          hydration: { icon: "💧", label: "이온 수분 음료", badge: "75% 섭취 선택", color: "blue" },
-          activity: { icon: "⚠️", label: "그늘 야외활동 중심", badge: "92% 선호 비율", color: "orange", chevron: true }
-        },
-        "p1": {
-          clothing: { icon: "👕", label: "시원한 반팔 면티", badge: "86% 쾌적 선택", color: "green" },
-          hydration: { icon: "💧", label: "아이스 아메리카노 / 물", badge: "72% 수분 섭취", color: "blue" },
-          activity: { icon: "🏃", label: "통풍이 잘되는 야외활동", badge: "88% 권장 비율", color: "green", chevron: false }
-        },
-        "zero": {
-          clothing: { icon: "👕", label: "일반 캐주얼 면티셔츠", badge: "89% 쾌적 선택", color: "green" },
-          hydration: { icon: "💧", label: "상온의 물 / 가벼운 탄산수", badge: "70% 일반 수분", color: "blue" },
-          activity: { icon: "🏃", label: "가벼운 피크닉 / 실외 산책", badge: "94% 완벽 등급", color: "green", chevron: false }
-        },
-        "m1": {
-          clothing: { icon: "🧥", label: "레이어드 카디건 / 얇은 셔츠", badge: "78% 레이어링", color: "blue" },
-          hydration: { icon: "☕", label: "미지근한 보리차 / 따뜻한 물", badge: "65% 온수 섭취", color: "orange" },
-          activity: { icon: "🏃", label: "활동적인 움직임 권장", badge: "80% 체온 관리", color: "blue", chevron: false }
-        },
-        "m2": {
-          clothing: { icon: "🧥", label: "두툼한 가디건 / 윈드브레이커", badge: "82% 체온 보호", color: "blue" },
-          hydration: { icon: "☕", label: "따뜻한 음차 / 허브 티", badge: "71% 온차 섭취", color: "orange" },
-          activity: { icon: "🏃", label: "체온 유지용 스트레칭", badge: "85% 가벼운 활동", color: "blue", chevron: false }
-        },
-        "m3": {
-          clothing: { icon: "🧥", label: "도톰한 점퍼 / 스웨터", badge: "91% 보온 무장", color: "red" },
-          hydration: { icon: "☕", label: "따뜻한 꿀물 / 생강차", badge: "80% 체온 보온", color: "orange" },
-          activity: { icon: "⚠️", label: "장시간 외부 대기 금지", badge: "95% 실내 피신", color: "orange", chevron: true }
-        }
-      },
-      "en": {
-        "p3": {
-          clothing: { icon: "👕", label: "Cooling Techwear", badge: "93% Heat choice", color: "red" },
-          hydration: { icon: "💧", label: "Electrolyte Drinks", badge: "88% High intake", color: "blue" },
-          activity: { icon: "⚠️", label: "Avoid Outdoor Action", badge: "97% Indoor rec", color: "orange", chevron: true }
-        },
-        "p2": {
-          clothing: { icon: "👕", label: "Linen Short Sleeves", badge: "81% Top preference", color: "blue" },
-          hydration: { icon: "💧", label: "Hydration Drinks", badge: "75% Fluid choice", color: "blue" },
-          activity: { icon: "⚠️", label: "Shaded Outdoor Activity", badge: "92% Shaded rec", color: "orange", chevron: true }
-        },
-        "p1": {
-          clothing: { icon: "👕", label: "Cool Short Cotton Tee", badge: "86% Comfort choice", color: "green" },
-          hydration: { icon: "💧", label: "Iced Coffee / Water", badge: "72% Fluid intake", color: "blue" },
-          activity: { icon: "🏃", label: "Well-ventilated Activity", badge: "88% High rec", color: "green", chevron: false }
-        },
-        "zero": {
-          clothing: { icon: "👕", label: "Casual Cotton Tee", badge: "89% Comfort choice", color: "green" },
-          hydration: { icon: "💧", label: "Lukewarm Water", badge: "70% Fluid intake", color: "blue" },
-          activity: { icon: "🏃", label: "Light Picnic / Walks", badge: "94% Perfect index", color: "green", chevron: false }
-        },
-        "m1": {
-          clothing: { icon: "🧥", label: "Layered Cardigan", badge: "78% Layer choice", color: "blue" },
-          hydration: { icon: "☕", label: "Warm Barley Tea / Water", badge: "65% Warm fluid", color: "orange" },
-          activity: { icon: "🏃", label: "Active Movement", badge: "80% Temp control", color: "blue", chevron: false }
-        },
-        "m2": {
-          clothing: { icon: "🧥", label: "Thick Cardigan / Jacket", badge: "82% Temp protection", color: "blue" },
-          hydration: { icon: "☕", label: "Warm Tea / Herbal Infusion", badge: "71% Warm choice", color: "orange" },
-          activity: { icon: "🏃", label: "Light Active Stretches", badge: "85% Safe activity", color: "blue", chevron: false }
-        },
-        "m3": {
-          clothing: { icon: "🧥", label: "Thick Puffer / Sweater", badge: "91% Heavy layering", color: "red" },
-          hydration: { icon: "☕", label: "Warm Honey / Ginger Tea", badge: "80% Energy recovery", color: "orange" },
-          activity: { icon: "⚠️", label: "No Long Outdoor Exposure", badge: "95% Stay indoor", color: "orange", chevron: true }
-        }
-      },
-      "ja": {
-        "p3": {
-          clothing: { icon: "👕", label: "冷感機能性ウェア", badge: "93% 極熱期選択", color: "red" },
-          hydration: { icon: "💧", label: "電解質補給飲料", badge: "88% 補給推奨", color: "blue" },
-          activity: { icon: "⚠️", label: "激しい屋外活動中止", badge: "97% 室内避難", color: "orange", chevron: true }
-        },
-        "p2": {
-          clothing: { icon: "👕", label: "リネン半袖シャツ", badge: "81% 好感度投票", color: "blue" },
-          hydration: { icon: "💧", label: "水分補給飲料", badge: "75% 水分補給", color: "blue" },
-          activity: { icon: "⚠️", label: "日陰の屋外活動中心", badge: "92% 日陰推奨", color: "orange", chevron: true }
-        },
-        "p1": {
-          clothing: { icon: "👕", label: "涼しい半袖Tシャツ", badge: "86% 快適選択", color: "green" },
-          hydration: { icon: "💧", label: "アイスコーヒー / 水", badge: "72% 水分摂取", color: "blue" },
-          activity: { icon: "🏃", label: "通風の良い屋外活動", badge: "88% 推奨割合", color: "green", chevron: false }
-        },
-        "zero": {
-          clothing: { icon: "👕", label: "快適なカジュアルTシャツ", badge: "89% 快適選択", color: "green" },
-          hydration: { icon: "💧", label: "常温水 / 炭酸水", badge: "70% 一般水分", color: "blue" },
-          activity: { icon: "🏃", label: "軽いピクニック / 散歩", badge: "94% 完璧指数", color: "green", chevron: false }
-        },
-        "m1": {
-          clothing: { icon: "🧥", label: "薄手カーディガン / 長袖", badge: "78% 重ね着推奨", color: "blue" },
-          hydration: { icon: "☕", label: "麦茶 / 温かい水", badge: "65% 温水摂取", color: "orange" },
-          activity: { icon: "🏃", label: "活発な身体活動推奨", badge: "80% 体温管理", color: "blue", chevron: false }
-        },
-        "m2": {
-          clothing: { icon: "🧥", label: "厚手カーディガン / 長袖", badge: "82% 体温保護", color: "blue" },
-          hydration: { icon: "☕", label: "温かいお茶 / ハーブティー", badge: "71% 温茶摂取", color: "orange" },
-          activity: { icon: "🏃", label: "体温維持ストレッチ", badge: "85% 軽い活動", color: "blue", chevron: false }
-        },
-        "m3": {
-          clothing: { icon: "🧥", label: "厚手ジャンパー / セーター", badge: "91% 防寒完全武装", color: "red" },
-          hydration: { icon: "☕", label: "温かいハチミツ水 / 生姜茶", badge: "80% エネルギー補正", color: "orange" },
-          activity: { icon: "⚠️", label: "長時間の屋外滞在禁止", badge: "95% 室内避難推奨", color: "orange", chevron: true }
-        }
-      }
-    };
-
-    const langRecs = RECS[lang] ?? RECS["ko"];
-    
-    if (pmv >= 2.5) return langRecs["p3"];
-    if (pmv >= 1.5) return langRecs["p2"];
-    if (pmv >= 0.5) return langRecs["p1"];
-    if (pmv > -0.5) return langRecs["zero"];
-    if (pmv > -1.5) return langRecs["m1"];
-    if (pmv > -2.5) return langRecs["m2"];
-    return langRecs["m3"];
-  };
-
-
-  const handleFeedback = async (feedbackType: "too_hot" | "too_cold" | "good") => {
-    if (!result || !userId) return;
+    setBusy(true);
+    setSaveMessage(null);
     try {
-      const response = await fetch("http://localhost:8002/api/v1/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
-          user_id: userId, // [변경] 동적 유저 ID 바인딩
-          feedback_type: feedbackType,
-          pmv_calculated: result.pmv,
-          temperature: result.weather?.temperature ?? 25.0,
-          clo_applied: result.recommendations.clo_applied ?? 0.5
-        })
+          height_cm: parseOptionalNumber(profile.height_cm),
+          weight_kg: parseOptionalNumber(profile.weight_kg),
+          body_fat_pct: parseOptionalNumber(profile.body_fat_pct),
+          birth_year: parseOptionalNumber(profile.birth_year),
+          sex: profile.sex,
+          thermal_sensitivity: profile.thermal_sensitivity,
+          default_activity: profile.default_activity,
+          default_environment: profile.default_environment,
+          indoor_temperature_c: parseOptionalNumber(profile.indoor_temperature_c),
+        }),
       });
-      if (response.ok) {
-        setFeedbackToast({ msg: "피드백이 반영되었습니다. 추천을 다시 업데이트합니다.", type: "success" });
-        setTimeout(() => setFeedbackToast(null), 3000);
-        // 피드백 반영 후 대시보드 상태 즉시 재분석
-        await handleAnalyzeAllHours();
-      } else {
-        setFeedbackToast({ msg: "피드백 전송에 실패했습니다. 잠시 후 다시 시도하세요.", type: "error" });
-        setTimeout(() => setFeedbackToast(null), 3000);
-        console.error("Failed to submit feedback");
+      if (!response.ok) throw new Error("프로필 저장에 실패했습니다. 입력 범위를 확인해 주세요.");
+      setSaveMessage("개인화 프로필을 저장했습니다. 다음 추천부터 반영됩니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "프로필을 저장하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestRecommendation(selectedHour?: number, targetLocation: SelectedLocation = location) {
+      const currentYear = new Date().getFullYear();
+      const age = profile.birth_year ? Math.max(14, currentYear - Number(profile.birth_year)) : 30;
+      const legacyActivity = profile.default_activity === "commute" ? "walking" : profile.default_activity === "outdoor_work" ? "cycling" : profile.default_activity === "indoor_exercise" ? "sedentary" : profile.default_activity;
+      const response = await fetch(`${API_BASE_URL}${session ? "/api/v1/recommendations" : "/api/v1/recommend"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({
+          latitude: targetLocation.latitude,
+          longitude: targetLocation.longitude,
+          lang: "ko",
+          selected_hour: selectedHour,
+          profile: {
+            user_id: user?.id ?? "guest",
+            height: Number(profile.height_cm) || 171,
+            weight: Number(profile.weight_kg) || 60,
+            age,
+            body_fat: parseOptionalNumber(profile.body_fat_pct),
+            gender: profile.sex === "male" ? "male" : "female",
+            environment: profile.default_environment === "indoor" ? "indoor" : "outdoor",
+            activity_level: legacyActivity,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string } | null;
+        if (response.status === 401) throw new Error("로그인 세션이 만료되었습니다. 다시 로그인해 주세요.");
+        throw new Error(payload?.detail || `날씨 분석을 불러오지 못했습니다. (${response.status})`);
       }
-    } catch (e) {
-      setFeedbackToast({ msg: "네트워크 오류가 발생했습니다.", type: "error" });
-      setTimeout(() => setFeedbackToast(null), 3000);
-      console.error("Feedback submit error", e);
-    }
-  };
+      return await response.json() as Recommendation;
+  }
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
+  async function loadRecommendation() {
+    setBusy(true);
+    setRecommendationError(null);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: authEmail,
-        password: authPassword
-      });
-      if (error) throw error;
-      setShowAuthModal(false);
-      setAuthEmail("");
-      setAuthPassword("");
-    } catch (err: any) {
-      setAuthError(err.message || "로그인에 실패했습니다.");
+      setRecommendation(await requestRecommendation());
+    } catch (error) {
+      setRecommendationError(formatError(error, "추천을 불러오지 못했습니다."));
     } finally {
-      setAuthLoading(false);
+      setBusy(false);
     }
-  };
+  }
 
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
+  async function loadHourlyRecommendations() {
+    setBusy(true);
+    setRecommendationError(null);
     try {
-      const { error } = await supabase.auth.signUp({
-        email: authEmail,
-        password: authPassword
-      });
-      if (error) throw error;
-      setShowAuthModal(false);
-      setAuthEmail("");
-      setAuthPassword("");
-      alert("회원가입 메일이 전송되었거나 가입이 완료되었습니다!");
-    } catch (err: any) {
-      setAuthError(err.message || "회원가입에 실패했습니다.");
+      const startHour = new Date().getHours();
+      const hours = Array.from({ length: Math.min(6, 24 - startHour) }, (_, index) => startHour + index);
+      const entries = await Promise.all(hours.map(async (hour) => [hour, await requestRecommendation(hour)] as const));
+      setHourlyRecommendations(Object.fromEntries(entries));
+    } catch (error) {
+      setRecommendationError(formatError(error, "시간별 분석을 불러오지 못했습니다."));
     } finally {
-      setAuthLoading(false);
+      setBusy(false);
     }
-  };
+  }
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    alert("로그아웃 되었습니다. 게스트 세션으로 복원됩니다.");
-  };
+  async function loadDashboard(targetLocation: SelectedLocation = location) {
+    setBusy(true);
+    setRecommendationError(null);
+    try {
+      const startHour = new Date().getHours();
+      const hours = Array.from({ length: Math.min(6, 24 - startHour) }, (_, index) => startHour + index);
+      // Fetch the current result first. This warms the per-location weather
+      // cache before the six hourly reads, preventing duplicate provider calls.
+      const current = await requestRecommendation(undefined, targetLocation);
+      setRecommendation(current);
+      const hourlyResults = await Promise.allSettled(hours.map(async (hour) => [hour, await requestRecommendation(hour, targetLocation)] as const));
+      const entries = hourlyResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      setHourlyRecommendations(Object.fromEntries(entries));
+      if (entries.length < hours.length) setRecommendationError("현재 분석은 표시했습니다. 일부 시간대 분석은 잠시 후 다시 시도해 주세요.");
+    } catch (error) {
+      setRecommendationError(formatError(error, "날씨와 개인화 분석을 불러오지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
-  const handleReset = () => {
-    const defaults = {
-      height: "181", weight: "78", bodyFat: "16",
-      gender: "male", environment: "outdoor" as const,
-      sido: "서울특별시", sigungu: "강남구",
+  useEffect(() => {
+    if (!authResolved) return;
+    if (!session) return;
+    const timer = window.setTimeout(() => { void loadProfile(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authResolved, user?.id]);
+
+  useEffect(() => {
+    if (!authResolved || (session && !profileReady) || initialAnalysisStarted.current) return;
+    initialAnalysisStarted.current = true;
+    const timer = window.setTimeout(() => { void loadDashboard(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authResolved, profileReady, session]);
+
+  async function loadWardrobe() {
+    if (!session) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/wardrobe`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("옷장을 불러오지 못했습니다.");
+      const data = await response.json() as { items: WardrobeItem[] };
+      setWardrobeItems(data.items);
+    } catch (error) {
+      setWardrobeMessage(formatError(error, "옷장을 불러오지 못했습니다."));
+    }
+  }
+
+  async function addWardrobe(item: Omit<WardrobeItem, "id">) {
+    if (!session) {
+      setActiveTab("settings");
+      setAuthMode("signIn");
+      setAuthOpen(true);
+      return;
+    }
+    setBusy(true);
+    setWardrobeMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/wardrobe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(item),
+      });
+      if (!response.ok) throw new Error("의류를 저장하지 못했습니다.");
+      const data = await response.json() as { item: WardrobeItem };
+      setWardrobeItems((items) => [data.item, ...items]);
+      setWardrobeMessage("옷장에 추가했습니다.");
+    } catch (error) {
+      setWardrobeMessage(formatError(error, "의류를 저장하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeWardrobe(itemId: string) {
+    if (!session) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/wardrobe/${itemId}`, { method: "DELETE", headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("의류를 삭제하지 못했습니다.");
+      setWardrobeItems((items) => items.filter((item) => item.id !== itemId));
+    } catch (error) {
+      setWardrobeMessage(formatError(error, "의류를 삭제하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadSavedLocations() {
+    if (!session) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/locations`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("저장한 장소를 불러오지 못했습니다.");
+      const data = await response.json() as { locations: SavedLocation[] };
+      setSavedLocations(data.locations);
+    } catch (error) {
+      setSaveMessage(formatError(error, "저장한 장소를 불러오지 못했습니다."));
+    }
+  }
+
+  function selectLocation(nextLocation: LocationOption | SavedLocation) {
+    const selected: SelectedLocation = {
+      latitude: nextLocation.latitude,
+      longitude: nextLocation.longitude,
+      label: nextLocation.name,
     };
-    setHeight(defaults.height);
-    setWeight(defaults.weight);
-    setBodyFat(defaults.bodyFat);
-    setGender(defaults.gender);
-    setEnvironment(defaults.environment);
-    setSelectedSido(defaults.sido);
-    setSelectedSigungu(defaults.sigungu);
-    handleAnalyzeAllHours({ 
-      sido: defaults.sido, 
-      sigungu: defaults.sigungu, 
-      gender: defaults.gender, 
-      environment: defaults.environment,
-      bodyFat: defaults.bodyFat 
-    });
-  };
+    setLocation(selected);
+    setLocationPickerOpen(false);
+    setQuickMenuOpen(false);
+    void loadDashboard(selected);
+  }
 
-  // PMV (-3 to +3) → 바늘 회전 각도 (-90 to +90)
-  const getNeedleRotation = (pmv: number) => {
-    const clamped = Math.max(-3, Math.min(3, pmv));
-    return (clamped / 3) * 90;
-  };
-
-  // 공유 URL 생성
-  const generateShareUrl = useCallback(() => {
-    const params = new URLSearchParams({
-      sido: selectedSido,
-      sigungu: selectedSigungu,
-      h: height,
-      w: weight,
-      bf: bodyFat,
-      g: gender,
-      env: environment,
-      t: selectedTime,
-      lang,
-    });
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-  }, [selectedSido, selectedSigungu, height, weight, bodyFat, gender, environment, selectedTime, lang]);
-
-  // 링크 복사
-  const copyShareLink = useCallback(async () => {
+  async function saveCurrentLocation() {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
     try {
-      await navigator.clipboard.writeText(generateShareUrl());
-      setFeedbackToast({ msg: t("share.copied"), type: "success" });
-      setTimeout(() => setFeedbackToast(null), 3000);
-    } catch {
-      setFeedbackToast({ msg: t("share.copy_fail"), type: "error" });
-      setTimeout(() => setFeedbackToast(null), 3000);
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/locations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ name: location.label, latitude: location.latitude, longitude: location.longitude, is_favorite: true }),
+      });
+      if (!response.ok) throw new Error("현재 장소를 저장하지 못했습니다.");
+      const data = await response.json() as { location: SavedLocation };
+      setSavedLocations((locations) => [data.location, ...locations]);
+      setSaveMessage("현재 장소를 즐겨찾기에 저장했습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "현재 장소를 저장하지 못했습니다."));
+    } finally {
+      setBusy(false);
     }
-  }, [generateShareUrl, t]);
+  }
 
-  // 결과 카드 이미지 저장 (네이티브 Print API)
-  const saveShareImage = useCallback(() => {
-    window.print();
-  }, []);
+  async function removeSavedLocation(locationId: string) {
+    if (!session) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/locations/${locationId}`, { method: "DELETE", headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("장소를 삭제하지 못했습니다.");
+      setSavedLocations((locations) => locations.filter((item) => item.id !== locationId));
+    } catch (error) {
+      setSaveMessage(formatError(error, "장소를 삭제하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
-  const sidoList = Object.keys(regions);
-  const sigunguList = regions[selectedSido] ?? [];
+  async function submitFeedback(feedbackType: "too_hot" | "comfortable" | "too_cold") {
+    if (!session || !recommendation) {
+      setActiveTab("settings");
+      setAuthMode("signIn");
+      setAuthOpen(true);
+      return;
+    }
+    try {
+      setBusy(true);
+      setFeedbackMessage(null);
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/recommendation-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ feedback_type: feedbackType, utci_personalized: recommendation.utci_personalized, activity: profile.default_activity }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(payload?.detail || "피드백을 저장하지 못했습니다.");
+      }
+      const data = await response.json() as { warmth_bias: number };
+      setSelectedFeedback(feedbackType);
+      const sign = data.warmth_bias > 0 ? "+" : "";
+      setFeedbackMessage(`저장됨 · 다음 추천의 보온 선호 ${sign}${data.warmth_bias.toFixed(1)} 단계로 반영했습니다.`);
+      await loadDashboard();
+    } catch (error) {
+      setFeedbackMessage(formatError(error, "피드백을 저장하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError(null);
+    setAuthMessage(null);
+    setBusy(true);
+    try {
+      if (authMode === "signUp") {
+        if (!termsAccepted || !privacyAccepted) throw new Error("이용약관과 개인정보 처리방침에 동의해 주세요.");
+        localStorage.setItem("pcrs_pending_consents", JSON.stringify({ terms: true, privacy: true, marketing: marketingAccepted }));
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword,
+          options: { emailRedirectTo: `${window.location.origin}/app` },
+        });
+        if (error) throw error;
+        if (data.session) await persistPendingConsents(data.session.access_token);
+        setAuthMessage("가입 확인 이메일을 보냈습니다. 이메일 인증 후 로그인해 주세요.");
+        return;
+      }
+      const { data, error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+      if (error) throw error;
+      if (data.session) await persistPendingConsents(data.session.access_token);
+      setAuthOpen(false);
+      setAuthPassword("");
+    } catch (error) {
+      setAuthError(formatError(error, "인증 처리에 실패했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signInWithGoogle() {
+    if (authMode === "signUp" && (!termsAccepted || !privacyAccepted)) {
+      setAuthError("Google 가입 전 이용약관과 개인정보 처리방침에 동의해 주세요.");
+      return;
+    }
+    if (authMode === "signUp") localStorage.setItem("pcrs_pending_consents", JSON.stringify({ terms: true, privacy: true, marketing: marketingAccepted }));
+    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/app` } });
+    if (error) setAuthError(error.message);
+  }
+
+  async function sendPasswordReset() {
+    if (!authEmail) {
+      setAuthError("비밀번호를 재설정할 이메일을 입력해 주세요.");
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: `${window.location.origin}/app` });
+    if (error) setAuthError(error.message);
+    else setAuthMessage("비밀번호 재설정 링크를 이메일로 보냈습니다.");
+  }
+
+  async function updateAccountEmail(email: string) {
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const { error } = await supabase.auth.updateUser({ email });
+      if (error) throw error;
+      setSaveMessage("새 이메일로 확인 링크를 보냈습니다. 확인 전까지 현재 이메일이 유지됩니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "이메일 변경을 요청하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAccountPassword(password: string) {
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      setSaveMessage("비밀번호를 변경했습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "비밀번호를 변경하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function linkGoogleIdentity() {
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const { error } = await supabase.auth.linkIdentity({ provider: "google", options: { redirectTo: `${window.location.origin}/app` } });
+      if (error) throw error;
+    } catch (error) {
+      setSaveMessage(formatError(error, "Google 계정을 연결하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unlinkGoogleIdentity() {
+    const identity = user?.identities?.find((item) => item.provider === "google");
+    if (!identity) return;
+    if ((user?.identities?.length ?? 0) <= 1) {
+      setSaveMessage("마지막 로그인 수단은 해제할 수 없습니다.");
+      return;
+    }
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const { error } = await supabase.auth.unlinkIdentity(identity);
+      if (error) throw error;
+      setSaveMessage("Google 계정 연결을 해제했습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "Google 계정 연결을 해제하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut(scope: "local" | "global") {
+    const { error } = await supabase.auth.signOut({ scope });
+    if (error) setSaveMessage(error.message);
+  }
+
+  async function downloadDataExport() {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/data-export`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("데이터 내보내기를 준비하지 못했습니다.");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "pcrs-data-export.json";
+      link.click();
+      URL.revokeObjectURL(url);
+      setSaveMessage("내 데이터 JSON 파일을 준비했습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "데이터를 내보내지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestAccountDeletion(confirmationPhrase: string) {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/deletion-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ confirmation_phrase: confirmationPhrase }),
+      });
+      if (!response.ok) throw new Error("탈퇴 요청을 등록하지 못했습니다. 다시 로그인한 뒤 배포 설정을 확인해 주세요.");
+      setSaveMessage("탈퇴 요청을 등록했습니다. 30일 안에 취소할 수 있으며, 이후 개인정보가 삭제됩니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "탈퇴 요청을 등록하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAccountDeletion() {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/deletion-request`, { method: "DELETE", headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("진행 중인 탈퇴 요청이 없습니다.");
+      setSaveMessage("탈퇴 요청을 취소했습니다. 계정과 데이터는 계속 유지됩니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "탈퇴 요청을 취소하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetRecommendationFeedback() {
+    if (!session) return;
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/me/recommendation-feedback`, { method: "DELETE", headers: { Authorization: `Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error("피드백을 초기화하지 못했습니다.");
+      setSaveMessage("누적 착용감 피드백을 초기화했습니다.");
+    } catch (error) {
+      setSaveMessage(formatError(error, "피드백을 초기화하지 못했습니다."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function useCurrentLocation() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const selected = { latitude: coords.latitude, longitude: coords.longitude, label: "현재 위치" };
+        setLocation(selected);
+        setLocationPickerOpen(false);
+        void loadDashboard(selected);
+      },
+      () => setRecommendationError("위치 권한을 허용하지 않아 기본 위치를 사용합니다."),
+      { enableHighAccuracy: false, timeout: 8000 },
+    );
+  }
 
   return (
-    <>
-      <div className={`relative min-h-screen ${theme.bg} text-slate-800 flex justify-center font-sans antialiased transition-colors duration-500 pb-10`}>
-      {/* Background Decorative Gradients */}
-      <div className={`absolute top-[20%] right-[10%] w-[400px] h-[400px] rounded-full ${theme.gradientRight} blur-[120px] pointer-events-none transition-colors duration-500`} />
-      <div className={`absolute bottom-[10%] left-[10%] w-[400px] h-[400px] rounded-full ${theme.gradientLeft} blur-[120px] pointer-events-none transition-colors duration-500`} />
-
-      {/* Mobile Device Frame Container */}
-      <div className="max-w-[480px] w-full bg-white/70 backdrop-blur-xl shadow-2xl flex flex-col min-h-screen sm:min-h-[850px] sm:my-8 sm:rounded-[36px] overflow-hidden border border-white/60 relative animate-in fade-in duration-300">
-        
-        {/* Header */}
-        <header className="bg-slate-900 border-b border-slate-950 text-white sticky top-0 z-20 px-5 py-3 shadow-md flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
-              <Thermometer className="w-4 h-4" />
-            </div>
-            <h1 className="text-xs font-black tracking-tight text-white">
-              THERMAL GUIDE <span className="text-blue-400 text-[10px] font-semibold">v2.0</span>
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* 언어 토글 칩 */}
-            <div className="flex bg-slate-850 border border-slate-700 rounded-lg p-0.5">
-              {langs.map((l) => (
-                <button
-                  key={l}
-                  onClick={() => { setLang(l); handleAnalyzeAllHours(); }}
-                  className={`px-1.5 py-0.5 rounded text-[8px] font-black transition-all ${
-                    lang === l ? "bg-blue-600 text-white shadow-sm" : "text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  {l.toUpperCase()}
-                </button>
-              ))}
-            </div>
-
-            {/* 로그인 / 프로필 */}
-            {userEmail ? (
-              <button 
-                onClick={handleSignOut}
-                className="text-[9px] bg-slate-800 hover:bg-slate-700 text-slate-300 font-extrabold py-1 px-2 rounded-lg border border-slate-700"
-              >
-                {t("header.logout")}
-              </button>
-            ) : (
-              <button 
-                onClick={() => { setShowAuthModal(true); setAuthError(null); }}
-                className="text-[9px] bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-1 px-2 rounded-lg border border-blue-500 shadow-sm"
-              >
-                {t("header.login_short") || "로그인"}
-              </button>
-            )}
-          </div>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_15%_0%,#a7e6ff_0%,transparent_33%),linear-gradient(155deg,#1b91d4_0%,#2852b8_52%,#142460_100%)] px-0 py-0 text-slate-900 sm:px-6 sm:py-8">
+      <section className="mx-auto flex min-h-screen w-full max-w-[480px] flex-col overflow-hidden bg-[#f7faff]/95 shadow-2xl sm:min-h-[820px] sm:rounded-[36px]">
+        <header className="flex items-center justify-between bg-[#09265f] px-5 py-4 text-white">
+          <div className="flex items-center gap-2"><CloudSun className="text-sky-300" /><div><p className="text-sm font-black">THERMAL GUIDE</p><p className="text-[10px] text-sky-200">Personal weather wardrobe</p></div></div>
+          {user ? <button onClick={() => setActiveTab("settings")} className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-bold">{user.email ?? "계정"}</button> : <button onClick={() => { setAuthMode("signIn"); setAuthOpen(true); }} className="flex items-center gap-1 rounded-full bg-sky-400 px-3 py-1.5 text-xs font-black text-slate-950"><LogIn size={14} /> 로그인</button>}
         </header>
 
-        {/* Tab Contents Area (Scrollable) */}
-        <div className="flex-1 overflow-y-auto pb-20 relative">
-
-          {/* 1. 홈 탭 (Home View) */}
-          {activeTab === "home" && (
-            <div className="animate-in fade-in duration-200 flex flex-col items-center">
-              <section className="flex flex-col items-center w-full px-6 pt-5 pb-2 shrink-0 relative">
-          
-          {/* 위치 정보 & GPS 자동 매핑 (모달 연동 및 마우스 커서/디자인 개선) */}
-          <div className="flex items-center gap-2 mb-2">
-            <button
-              onClick={() => setIsLocationModalOpen(true)}
-              className="px-3 py-1 rounded-full bg-slate-100 hover:bg-blue-50 text-slate-800 hover:text-blue-600 text-xs font-black flex items-center gap-1.5 transition-all duration-200 border border-slate-200/40 shadow-sm"
-              title="클릭하여 수동 위치 설정 및 지도 보기"
-            >
-              <Map className="w-3.5 h-3.5 text-blue-500" />
-              {selectedSido} {selectedSigungu}
-              <ChevronDown className="w-3 h-3 opacity-60" />
-            </button>
-            <button
-              onClick={handleGPSLocation}
-              disabled={gpsLoading}
-              className="p-1.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 transition-all duration-200 disabled:opacity-50 shadow-sm"
-              title="GPS 현재 위치 자동 매핑"
-            >
-              {gpsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
-            </button>
-          </div>
-
-          {/* 실시간 날씨 데이터 요약 */}
-          {result && result.weather && (
-            <div className="flex flex-col items-center gap-1.5 mb-4">
-              <div className="flex items-center gap-2 bg-white/65 border border-white/80 px-3 py-1.5 rounded-full shadow-[0_8px_18px_rgba(46,117,177,0.10)] text-[10px] font-bold text-slate-600">
-                <span className="flex items-center gap-0.5 text-red-500">
-                  <Thermometer className="w-3 h-3" />
-                  {result.weather.temperature.toFixed(1)}°C
-                </span>
-                <span className="text-slate-300">|</span>
-                <span className="flex items-center gap-0.5 text-blue-500">
-                  <Droplet className="w-3 h-3" />
-                  {result.weather.humidity}%
-                </span>
-                <span className="text-slate-300">|</span>
-                <span className="flex items-center gap-0.5 text-teal-600">
-                  <Wind className="w-3 h-3" />
-                  {result.weather.wind_speed.toFixed(1)}m/s
-                </span>
-                {result.weather.apparent_temperature !== undefined && (
-                  <>
-                    <span className="text-slate-300">|</span>
-                    <span className="flex items-center gap-0.5 text-orange-500" title="공식 체감 온도">
-                      체감 {result.weather.apparent_temperature?.toFixed(1)}°C
-                    </span>
-                  </>
-                )}
-              </div>
-              
-              <div className="flex items-center gap-2 bg-white/50 border border-white/60 px-3 py-1 rounded-full text-[9px] font-bold text-slate-500 shadow-sm">
-                {result.weather.uv_index !== undefined && (
-                  <span className="flex items-center gap-0.5 text-amber-600">
-                    ☀️ 자외선 {result.weather.uv_index?.toFixed(1)}
-                  </span>
-                )}
-                {result.weather.precipitation_probability !== undefined && (
-                  <>
-                    <span className="text-slate-300">|</span>
-                    <span className="flex items-center gap-0.5 text-blue-400">
-                      💧 강수 {result.weather.precipitation_probability}%
-                    </span>
-                  </>
-                )}
-                {result.weather.pm10 !== undefined && result.weather.pm2_5 !== undefined && (
-                  <>
-                    <span className="text-slate-300">|</span>
-                    <span className="flex items-center gap-0.5 text-indigo-500" title={`초미세먼지(PM2.5): ${result.weather.pm2_5?.toFixed(1)} ㎍/㎥`}>
-                      😷 미세 {result.weather.pm10?.toFixed(0)} / 초미세 {result.weather.pm2_5?.toFixed(0)}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* 실시간 기상 재해/특보 알림 배너 (깜빡임 애니메이션 추가) */}
-          {(() => {
-            const alerts = getWeatherAlerts();
-            if (alerts.length === 0) return null;
-            return (
-              <div className="w-full flex flex-col gap-1.5 mb-4 max-w-sm">
-                {alerts.map((alert, idx) => (
-                  <div 
-                    key={idx} 
-                    className={`px-3 py-2 rounded-2xl border text-[10px] leading-relaxed font-bold shadow-sm animate-pulse ${
-                      alert.type === "danger" 
-                        ? "bg-rose-50 border-rose-200 text-rose-700" 
-                        : "bg-amber-50 border-amber-200 text-amber-700"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1 font-black mb-0.5">{alert.title}</div>
-                    <div>{alert.desc}</div>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-
-          {/* 체감 지수 배지 (UTCI 기반) */}
-          {result && (
-            <div className={`px-4 py-1.5 rounded-full text-xs font-black shadow-sm flex items-center gap-1.5 z-10 transition-colors ${
-              (result.utci_personalized ?? result.pmv) >= 32
-                ? "bg-rose-100 text-rose-700 border border-rose-200"
-                : (result.utci_personalized ?? result.pmv) <= 0
-                  ? "bg-sky-100 text-sky-700 border border-sky-200"
-                  : "bg-emerald-100 text-emerald-700 border border-emerald-200"
-            }`}>
-              {(result.utci_personalized ?? result.pmv) >= 32 && <AlertTriangle className="w-3.5 h-3.5" />}
-              <span>{result.thermal_sensation}</span>
-              {result.utci_personalized !== undefined && (
-                <span className="ml-1 opacity-70 text-[9px]">UTCI {result.utci_personalized.toFixed(1)}°C</span>
-              )}
-            </div>
-          )}
-
-          {/* 개인화 안전 넛지 배너 */}
-          {result && result.nudge && (
-            <div className={`w-full max-w-[340px] p-5 my-4 rounded-3xl border transition-all duration-300 backdrop-blur-xl shadow-xl z-10 flex flex-col gap-3.5 ${
-              result.nudge.nudge_warning 
-                ? "bg-rose-500/10 border-rose-500/35 text-rose-200" 
-                : "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
-            }`}>
-              <div className="flex items-center gap-2.5 font-black text-xs uppercase tracking-wider">
-                {result.nudge.nudge_warning ? (
-                  <AlertTriangle className="w-5 h-5 text-rose-400 animate-pulse" />
-                ) : (
-                  <Sparkles className="w-5 h-5 text-emerald-400" />
-                )}
-                <span>{result.nudge.nudge_warning ? "개인화 온열 피로 경고" : "체감 정보 알림"}</span>
-              </div>
-              <p className="text-xs font-bold leading-relaxed text-slate-100/90 whitespace-pre-line">
-                {result.nudge.nudge_message || "현재 안전한 상태입니다. 편안한 일상 활동을 즐기세요."}
-              </p>
-              {result.nudge.diff_temp !== 0 && (
-                <div className="border-t border-white/10 pt-2 flex justify-between items-center text-[10px] font-bold text-slate-300">
-                  <span>지역 체감 온도: {result.utci ? result.utci.toFixed(1) : result.pmv.toFixed(1)}°C</span>
-                  <span className={result.nudge.diff_temp > 0 ? "text-rose-300" : "text-sky-300"}>
-                    개인 격차: {result.nudge.diff_temp > 0 ? `+${result.nudge.diff_temp}` : result.nudge.diff_temp}°C
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* 3버튼 피드백 컨트롤 루프 */}
-          {result && (
-            <div className="w-full flex flex-col items-center gap-2 mt-1">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{t("thermal.feedback_q")}</span>
-              <div className="flex gap-2 w-full max-w-[280px]">
-                <button
-                  onClick={() => handleFeedback("too_hot")}
-                  className="flex-1 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-extrabold text-[11px] transition-all border border-rose-200 shadow-sm flex flex-col items-center"
-                >
-                  <span className="text-sm">🥵</span>
-                  <span>{t("thermal.too_hot")}</span>
-                </button>
-                <button
-                  onClick={() => handleFeedback("good")}
-                  className="flex-1 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-extrabold text-[11px] transition-all border border-emerald-200 shadow-sm flex flex-col items-center"
-                >
-                  <span className="text-sm">😊</span>
-                  <span>{t("thermal.good")}</span>
-                </button>
-                <button
-                  onClick={() => handleFeedback("too_cold")}
-                  className="flex-1 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-600 font-extrabold text-[11px] transition-all border border-sky-200 shadow-sm flex flex-col items-center"
-                >
-                  <span className="text-sm">🥶</span>
-                  <span>{t("thermal.too_cold")}</span>
-                </button>
-              </div>
-              
-              {/* 피드백 보정치 표시 */}
-              {result.recommendations.user_clo_bias !== undefined && (
-                <span className="text-[9px] font-bold text-blue-600">
-                  {t("ai.feedback_applied")}{result.recommendations.user_clo_bias > 0 ? `+${result.recommendations.user_clo_bias}` : result.recommendations.user_clo_bias} ({t("ai.clo_final")}: {result.recommendations.clo_applied})
-                </span>
-              )}
-            </div>
-          )}
-
-                {/* 설정 숏컷 버튼 */}
-                <button
-                  onClick={() => setActiveTab("settings")}
-                  className="absolute right-6 top-6 p-2 rounded-full border bg-white/90 border-slate-200 text-slate-600 hover:text-slate-800 shadow-sm transition-all"
-                  title="개인 설정 편집 이동"
-                >
-                  <Settings className="w-4 h-4" />
-                </button>
-              </section>
-
-              {/* 홈 화면 하단 안내 문구 */}
-              {result && (
-                <div className="px-6 py-4 mt-4 w-full">
-                  <p className="text-[11px] text-slate-500 leading-relaxed bg-slate-50 border border-slate-100 p-4 rounded-2xl font-medium shadow-sm">
-                    {getSummarySentence()}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-        {/* Bottom Sheet Details Panel */}
-        <section className="bg-white/95 rounded-t-[36px] shadow-[0_-12px_30px_rgba(0,0,0,0.06)] px-5 py-6 flex-1 flex flex-col gap-6 mt-2 border-t border-slate-100 relative pb-16">
-          
-          {/* 1. 퀵 프로필/체형 편집 슬라이더 패널 (Settings panel) */}
-          {showQuickProfile && (
-            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex flex-col gap-4 animate-in slide-in-from-top duration-300">
-              <div className="flex justify-between items-center border-b border-slate-200 pb-1.5">
-                <span className="text-xs font-black text-slate-700 flex items-center gap-1.5">
-                  <Sliders className="w-4 h-4 text-blue-500" />
-                  {t("body.title")}
-                </span>
-                <button
-                  onClick={() => setShowQuickProfile(false)}
-                  className="text-[10px] font-extrabold text-slate-400 hover:text-slate-600"
-                >
-                  ✕ {t("bodyfat.close") || "닫기"}
-                </button>
-              </div>
-
-              {/* 성별 & 활동 환경 토글 */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] text-slate-400 font-bold block mb-1">{t("body.gender")}</label>
-                  <div className="flex bg-slate-200/60 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      onClick={() => setGender("male")}
-                      className={`flex-1 py-1 rounded text-[11px] font-bold transition-all ${gender === "male" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"}`}
-                    >
-                      {t("body.male")}
-                    </button>
-                    <button
-                      onClick={() => setGender("female")}
-                      className={`flex-1 py-1 rounded text-[11px] font-bold transition-all ${gender === "female" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"}`}
-                    >
-                      {t("body.female")}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[10px] text-slate-400 font-bold block mb-1">{t("body.env")}</label>
-                  <div className="flex bg-slate-200/60 p-0.5 rounded-lg border border-slate-200">
-                    <button
-                      onClick={() => setEnvironment("indoor")}
-                      className={`flex-1 py-1 rounded text-[11px] font-bold transition-all ${environment === "indoor" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"}`}
-                    >
-                      {t("body.indoor")}
-                    </button>
-                    <button
-                      onClick={() => setEnvironment("outdoor")}
-                      className={`flex-1 py-1 rounded text-[11px] font-bold transition-all ${environment === "outdoor" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"}`}
-                    >
-                      {t("body.outdoor")}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 키 슬라이더 */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[10px] font-bold text-slate-500">
-                  <span>{t("body.height")}</span>
-                  <span className="text-blue-600 font-black">{height}cm</span>
-                </div>
-                <input
-                  type="range"
-                  min="100"
-                  max="220"
-                  value={height}
-                  onChange={(e) => setHeight(e.target.value)}
-                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-              </div>
-
-              {/* 몸무게 슬라이더 */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[10px] font-bold text-slate-500">
-                  <span>{t("body.weight")}</span>
-                  <span className="text-blue-600 font-black">{weight}kg</span>
-                </div>
-                <input
-                  type="range"
-                  min="30"
-                  max="150"
-                  value={weight}
-                  onChange={(e) => setWeight(e.target.value)}
-                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-              </div>
-
-              {/* 체지방률 슬라이더 */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[10px] font-bold text-slate-500 items-center">
-                  <span className="flex items-center gap-1">
-                    {t("body.fat")}
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        setGuideGenderTab(gender);
-                        setShowBodyFatGuide(true);
-                      }}
-                      className="text-slate-400 hover:text-slate-600"
-                    >
-                      <HelpCircle className="w-3.5 h-3.5 text-blue-500" />
-                    </button>
-                  </span>
-                  <span className="text-blue-600 font-black">{bodyFat}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="3"
-                  max="50"
-                  value={bodyFat}
-                  onChange={(e) => setBodyFat(e.target.value)}
-                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-              </div>
-
-              {/* 나이 슬라이더 [신설] */}
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between text-[10px] font-bold text-slate-500">
-                  <span>{lang === "ko" ? "나이" : lang === "en" ? "Age" : "年齢"}</span>
-                  <span className="text-purple-600 font-black">{age}세</span>
-                </div>
-                <input
-                  type="range"
-                  min="5"
-                  max="90"
-                  value={age}
-                  onChange={(e) => setAge(e.target.value)}
-                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-purple-500"
-                />
-                <div className="flex justify-between text-[9px] text-slate-400">
-                  <span>어린이</span>
-                  <span>청년</span>
-                  <span>중년</span>
-                  <span>노년</span>
-                </div>
-              </div>
-
-              {/* 활동 수준 [신설] */}
-              <div>
-                <label className="text-[10px] text-slate-400 font-bold block mb-1">
-                  {lang === "ko" ? "활동 수준" : lang === "en" ? "Activity Level" : "活動レベル"}
-                </label>
-                <div className="flex bg-slate-200/60 p-0.5 rounded-lg border border-slate-200">
-                  <button
-                    onClick={() => setActivityLevel("sedentary")}
-                    className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
-                      activityLevel === "sedentary" ? "bg-white text-slate-700 shadow-sm" : "text-slate-500"
-                    }`}
-                  >
-                    {lang === "ko" ? "안정" : "Calm"}
-                  </button>
-                  <button
-                    onClick={() => setActivityLevel("walking")}
-                    className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
-                      activityLevel === "walking" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500"
-                    }`}
-                  >
-                    {lang === "ko" ? "보행" : "Walk"}
-                  </button>
-                  <button
-                    onClick={() => setActivityLevel("jogging")}
-                    className={`flex-1 py-1 rounded text-[10px] font-bold transition-all ${
-                      activityLevel === "jogging" ? "bg-white text-orange-600 shadow-sm" : "text-slate-500"
-                    }`}
-                  >
-                    {lang === "ko" ? "조깅" : "Jog"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 2. 오늘의 가이드 요약 (의류 / 수분 / 활동) */}
-          <div className="flex flex-col gap-3">
-            <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-blue-500" />
-              {t("ai.title")}
-            </span>
-            
-            {error && (
-              <div className="text-[10px] text-red-500 bg-red-50 border border-red-200 rounded-xl px-3 py-1.5">
-                ⚠️ {error}
-              </div>
-            )}
-
-            {/* 리치 3단 가이드 리스트 */}
-            <div className="flex flex-col gap-2.5">
-              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-blue-50/80 to-indigo-50/60 border border-blue-200/40 flex gap-3 items-start hover:border-blue-300/60 hover:shadow-md hover:shadow-blue-100/50 transition-all duration-200 backdrop-blur-sm">
-                <div className="p-2 rounded-xl bg-blue-500/15 text-blue-600 shrink-0 mt-0.5 shadow-sm shadow-blue-100">
-                  <Shirt className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-[11px] text-slate-500 font-black tracking-wider uppercase">{t("ai.clothing")}</h4>
-                  <p className="text-xs text-slate-800 font-bold mt-1 leading-relaxed">
-                    {result?.recommendations?.clothing
-                      ? (Array.isArray(result.recommendations.clothing)
-                        ? result.recommendations.clothing.join(", ")
-                        : result.recommendations.clothing)
-                      : isLoading ? <span className="animate-pulse text-slate-400">{t("ai.loading")}</span> : t("ai.empty")}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-cyan-50/80 to-teal-50/60 border border-cyan-200/40 flex gap-3 items-start hover:border-cyan-300/60 hover:shadow-md hover:shadow-cyan-100/50 transition-all duration-200 backdrop-blur-sm">
-                <div className="p-2 rounded-xl bg-cyan-500/15 text-cyan-600 shrink-0 mt-0.5 shadow-sm shadow-cyan-100">
-                  <Droplet className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-[11px] text-slate-500 font-black tracking-wider uppercase">{t("ai.hydration")}</h4>
-                  <p className="text-xs text-slate-800 font-bold mt-1 leading-relaxed">
-                    {result?.recommendations?.hydration || (isLoading ? t("ai.loading") : t("ai.empty"))}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-amber-50/80 to-orange-50/60 border border-amber-200/40 flex gap-3 items-start hover:border-amber-300/60 hover:shadow-md hover:shadow-amber-100/50 transition-all duration-200 backdrop-blur-sm">
-                <div className="p-2 rounded-xl bg-orange-500/15 text-orange-600 shrink-0 mt-0.5 shadow-sm shadow-orange-100">
-                  <AlertTriangle className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-[11px] text-slate-500 font-black tracking-wider uppercase">{t("ai.activity")}</h4>
-                  <p className="text-xs text-slate-800 font-bold mt-1 leading-relaxed">
-                    {result?.recommendations?.activity || (isLoading ? t("ai.loading") : t("ai.empty"))}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* 10단계: 활동별 야외 적합 지수 카드 목록 */}
-          {result && (
-            <div className="flex flex-col gap-3 bg-white/40 p-4 rounded-3xl border border-slate-100/80 shadow-sm backdrop-blur-sm">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-emerald-500" />
-                {t("activity.suitability") || "활동별 야외 적합 지수"}
-              </span>
-              
-              <div className="grid grid-cols-3 gap-2.5 mt-1.5">
-                {(result.suitability || []).map((act: any, idx: number) => (
-                  <div 
-                    key={idx} 
-                    className="p-3 rounded-2xl border bg-white/60 hover:bg-white hover:border-emerald-200 hover:shadow-md hover:shadow-emerald-50/50 transition-all duration-200 flex flex-col items-center text-center gap-1"
-                  >
-                    <span className="text-[11px] font-black text-slate-700">{act.name}</span>
-                    <span className={`text-[8px] font-black px-2 py-0.5 rounded-full border ${act.color}`}>
-                      {act.label}
-                    </span>
-                    <span className="text-sm font-black text-slate-900 mt-0.5">{act.score}점</span>
-                    {/* 게이지 바 */}
-                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1 shadow-inner">
-                      <div className={`h-full ${act.barColor}`} style={{ width: `${act.score}%` }}></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 3. 시간대별 체감 지수 예보 (선형 차트) */}
-          <div className="flex flex-col gap-3 bg-white/40 p-4 rounded-3xl border border-slate-100/80 shadow-sm">
-            <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Sliders className="w-4 h-4 text-blue-500" />
-                {t("time.title") || "시간대별 체감 지수 예보"}
-              </span>
-              <span className="text-[10px] text-slate-400 font-semibold">(차트 터치로 시간 변경)</span>
-            </span>
-
-            {/* Recharts ComposedChart - Area 그라데이션 + 위험구간 밴드 */}
-            <div className="h-44 w-full mt-2">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart
-                  data={times.map((t) => {
-                    const res = hourlyResults[t];
-                    const tempVal = res?.weather?.temperature ?? 0;
-                    const utciVal = res?.utci_personalized ?? res?.utci ?? 0;
-                    return {
-                      time: t,
-                      "체감 온도": Math.round(utciVal * 10) / 10,
-                      "실제 기온": Math.round(tempVal * 10) / 10,
-                      sensation: res?.thermal_sensation ?? "",
-                      clothing: res?.recommendations?.clothing ?? [],
-                    };
-                  })}
-                  margin={{ top: 10, right: 15, left: -25, bottom: 5 }}
-                  onClick={(e) => {
-                    if (e && e.activeLabel) {
-                      setSelectedTime(String(e.activeLabel));
-                    }
-                  }}
-                >
-                  {/* SVG 그라데이션 정의 */}
-                  <defs>
-                    <linearGradient id="utciAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.18} />
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis 
-                    dataKey="time" 
-                    tick={{ fontSize: 9, fontWeight: 800, fill: "#64748b" }} 
-                    axisLine={false} 
-                    tickLine={false} 
-                  />
-                  <YAxis 
-                    tick={{ fontSize: 9, fontWeight: 700, fill: "#64748b" }} 
-                    axisLine={false} 
-                    tickLine={false} 
-                    domain={["auto", "auto"]} 
-                  />
-                  <Tooltip 
-                    content={<CustomChartTooltip />} 
-                    cursor={{ stroke: "rgba(96, 165, 250, 0.2)", strokeWidth: 2 }} 
-                  />
-                  {/* 쾌적 범위 경계 가이드 라인 */}
-                  <ReferenceLine y={32} stroke="#ef4444" strokeDasharray="4 3" opacity={0.6} label={{ value: "열위험", position: "insideTopRight", fontSize: 8, fill: "#ef4444" }} />
-                  <ReferenceLine y={26} stroke="#f97316" strokeDasharray="3 3" opacity={0.45} />
-                  <ReferenceLine y={9} stroke="#10b981" strokeDasharray="3 3" opacity={0.45} />
-                  
-                  {/* 체감 온도 Area (그라데이션 채우기) */}
-                  <Area
-                    type="monotone"
-                    dataKey="체감 온도"
-                    stroke="none"
-                    fill="url(#utciAreaGrad)"
-                    fillOpacity={1}
-                    isAnimationActive={true}
-                    animationDuration={600}
-                  />
-                  {/* 실제 기온 보조 선 */}
-                  <Line 
-                    type="monotone" 
-                    dataKey="실제 기온" 
-                    stroke="#94a3b8"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                    dot={false}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </section>
-
-          {/* 하단 탭 내비게이션 바 컴포넌트 */}
-          <nav className="absolute bottom-0 left-0 right-0 h-16 bg-slate-900 border-t border-slate-950 text-white flex justify-around items-center z-30 px-2 shadow-lg">
-        <button
-          onClick={() => setActiveTab("home")}
-          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
-            activeTab === "home" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Thermometer className="w-5 h-5" />
-          <span className="text-[9px] tracking-tight">{lang === "ko" ? "홈" : "Home"}</span>
-        </button>
-        <button
-          onClick={() => setActiveTab("hourly")}
-          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
-            activeTab === "hourly" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Sliders className="w-5 h-5" />
-          <span className="text-[9px] tracking-tight">{lang === "ko" ? "시간별" : "Hourly"}</span>
-        </button>
-        <button
-          onClick={() => setActiveTab("clothing")}
-          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
-            activeTab === "clothing" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Shirt className="w-5 h-5" />
-          <span className="text-[9px] tracking-tight">{lang === "ko" ? "의류" : "Clothing"}</span>
-        </button>
-        <button
-          onClick={() => setActiveTab("settings")}
-          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
-            activeTab === "settings" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Settings className="w-5 h-5" />
-          <span className="text-[9px] tracking-tight">{lang === "ko" ? "설정" : "Settings"}</span>
-        </button>
-      </nav>
-      </div>
-      </div>
-      </div>
-
-      {/* 피드백 토스트 알림 */}
-      {feedbackToast && (
-        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-xl border text-[12px] font-bold animate-in fade-in slide-in-from-bottom-3 duration-300 ${
-          feedbackToast.type === "success"
-            ? "bg-green-50 border-green-200 text-green-700"
-            : "bg-red-50 border-red-200 text-red-700"
-        }`}>
-          <span>{feedbackToast.type === "success" ? "✅" : "❌"}</span>
-          <span>{feedbackToast.msg}</span>
+        <div className="flex-1 overflow-y-auto px-5 py-5 pb-24">
+          {activeTab === "home" && <HomeExperience location={location} profile={profile} recommendation={recommendation} hourlyRecommendations={hourlyRecommendations} busy={busy} error={recommendationError} feedbackMessage={feedbackMessage} selectedFeedback={selectedFeedback} quickMenuOpen={quickMenuOpen} onLocate={useCurrentLocation} onRefresh={loadDashboard} onOpenLocationPicker={() => { setQuickMenuOpen(false); setLocationPickerOpen(true); }} onToggleQuickMenu={() => setQuickMenuOpen((open) => !open)} onSettings={() => { setQuickMenuOpen(false); setActiveTab("settings"); }} onFeedback={submitFeedback} />}
+          {activeTab === "hourly" && <HourlyTab activity={profile.default_activity} recommendations={hourlyRecommendations} onRefresh={loadHourlyRecommendations} busy={busy} error={recommendationError} />}
+          {activeTab === "clothing" && <ClothingTab user={user} items={wardrobeItems} busy={busy} message={wardrobeMessage} onAdd={addWardrobe} onDelete={removeWardrobe} onLogin={() => { setAuthMode("signIn"); setAuthOpen(true); }} />}
+          {activeTab === "settings" && <SettingsTab user={user} profile={profile} setProfile={setProfile} busy={busy} message={saveMessage} onLoad={loadProfile} onSave={saveProfile} onLogin={() => { setAuthMode("signIn"); setAuthOpen(true); }} onSignOutLocal={() => void signOut("local")} onSignOutAll={() => void signOut("global")} onEmailChange={updateAccountEmail} onPasswordChange={updateAccountPassword} onGoogleLink={linkGoogleIdentity} onGoogleUnlink={unlinkGoogleIdentity} onExport={downloadDataExport} onFeedbackReset={resetRecommendationFeedback} onDeletionRequest={requestAccountDeletion} onDeletionCancel={cancelAccountDeletion} location={location} savedLocations={savedLocations} onLoadLocations={loadSavedLocations} onSaveLocation={saveCurrentLocation} onSelectLocation={selectLocation} onDeleteLocation={removeSavedLocation} />}
         </div>
-      )}
 
-      {/* Supabase Auth 간이 로그인/회원가입 모달 */}
-      {showAuthModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 transition-opacity">
-          <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-xl w-full max-w-sm flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <h3 className="text-sm font-bold text-slate-800">
-                {isSignUp ? t("auth.signup") : t("auth.login")}
-              </h3>
-              <button 
-                onClick={() => { setShowAuthModal(false); setAuthError(null); }}
-                className="text-slate-400 hover:text-slate-600 font-extrabold text-xs"
-              >
-                ✕
-              </button>
-            </div>
+        <nav className="grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 py-2">
+          <TabButton label="홈" active={activeTab === "home"} onClick={() => setActiveTab("home")} icon={<ThermometerSun size={20} />} />
+          <TabButton label="시간별" active={activeTab === "hourly"} onClick={() => setActiveTab("hourly")} icon={<SlidersHorizontal size={20} />} />
+          <TabButton label="의류" active={activeTab === "clothing"} onClick={() => { setActiveTab("clothing"); void loadWardrobe(); }} icon={<Shirt size={20} />} />
+          <TabButton label="설정" active={activeTab === "settings"} onClick={() => setActiveTab("settings")} icon={<Settings size={20} />} />
+        </nav>
+      </section>
 
-            {authError && (
-              <div className="text-[10px] text-red-500 bg-red-50 border border-red-200 p-2 rounded-lg">
-                ⚠️ {authError}
-              </div>
-            )}
-
-            <form onSubmit={isSignUp ? handleSignUp : handleSignIn} className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-slate-500 font-bold">{t("auth.email")}</label>
-                <input
-                  type="email"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  placeholder="name@example.com"
-                  required
-                  className="px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-slate-500 font-bold">{t("auth.password")}</label>
-                <input
-                  type="password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                  minLength={6}
-                  className="px-3 py-2 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={authLoading}
-                className="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors shadow disabled:opacity-50"
-              >
-                {authLoading ? t("ai.loading") : (isSignUp ? t("auth.submit_signup") : t("auth.submit_login"))}
-              </button>
-            </form>
-
-            <div className="text-center pt-2 border-t border-slate-100 text-[10px]">
-              <button 
-                onClick={() => { setIsSignUp(!isSignUp); setAuthError(null); }}
-                className="text-blue-500 hover:text-blue-700 font-bold"
-              >
-                {isSignUp ? t("auth.switch_login") : t("auth.switch_signup")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 체지방률 도움말 모달 */}
-      {showBodyFatGuide && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-50 transition-opacity">
-          <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-xl w-full max-w-lg flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-                  <HelpCircle className="w-4 h-4 text-blue-500" />
-                  {t("bodyfat.guide_title")}
-                </h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">{t("bodyfat.guide_desc")}</p>
-              </div>
-              <button 
-                onClick={() => setShowBodyFatGuide(false)}
-                className="text-slate-400 hover:text-slate-650 font-extrabold text-sm p-1.5 hover:bg-slate-100 rounded-lg transition-colors"
-              >
-                {t("bodyfat.close")}
-              </button>
-            </div>
-
-            {/* 성별 탭 */}
-            <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
-              <button
-                type="button"
-                onClick={() => setGuideGenderTab("male")}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${guideGenderTab === "male" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-              >
-                {t("bodyfat.male")}
-              </button>
-              <button
-                type="button"
-                onClick={() => setGuideGenderTab("female")}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${guideGenderTab === "female" ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-              >
-                {t("bodyfat.female")}
-              </button>
-            </div>
-
-            {/* 본문 콘텐츠 */}
-            <div className="flex flex-col gap-4">
-              {/* 체형 일러스트 */}
-              <div className="relative border border-slate-200/80 rounded-xl overflow-hidden bg-slate-50 flex items-center justify-center p-2 min-h-[160px]">
-                {guideGenderTab === "male" ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img 
-                    src="/male_body_fat_guide.png" 
-                    alt="남성 체지방률 가이드" 
-                    className="max-h-[180px] object-contain rounded-lg transition-opacity duration-300"
-                  />
-                ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img 
-                    src="/female_body_fat_guide.png" 
-                    alt="여성 체지방률 가이드" 
-                    className="max-h-[180px] object-contain rounded-lg transition-opacity duration-300"
-                  />
-                )}
-              </div>
-
-              {/* 퀵클릭 구간 선택 리스트 */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {guideGenderTab === "male" ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("11")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.athlete_title_m")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.athlete_desc_m")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("15")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.fit_title_m")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.fit_desc_m")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("20")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.normal_title_m")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.normal_desc_m")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("26")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.overweight_title_m")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.overweight_desc_m")}</div>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("19")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.athlete_title_f")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.athlete_desc_f")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("22")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.fit_title_f")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.fit_desc_f")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("28")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.normal_title_f")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.normal_desc_f")}</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleQuickFillBodyFat("33")}
-                      className="p-3 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 rounded-xl text-left transition-all"
-                    >
-                      <div className="text-[11px] font-black text-slate-700">{t("bodyfat.overweight_title_f")}</div>
-                      <div className="text-[9px] text-slate-400 mt-1 leading-normal">{t("bodyfat.overweight_desc_f")}</div>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* 5. 위치 직접 변경 및 지도 보기 고급 글래스모피즘 모달 */}
-      {isLocationModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
-          <div className="bg-white/95 w-full max-w-sm rounded-3xl border border-slate-100 p-5 shadow-2xl relative flex flex-col gap-4 animate-in zoom-in-95 duration-200">
-            {/* 모달 헤더 */}
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                <Map className="w-4 h-4 text-blue-500" />
-                {t("location.title") || "현재 위치 설정 / 지도 보기"}
-              </span>
-              <button 
-                onClick={() => setIsLocationModalOpen(false)}
-                className="p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
-              >
-                <span className="text-sm font-bold">✕</span>
-              </button>
-            </div>
-            
-            {/* 셀렉트박스 변경 */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sido")}</label>
-                <select
-                  value={selectedSido}
-                  onChange={(e) => {
-                    const newSido = e.target.value;
-                    setSelectedSido(newSido);
-                    const firstSigungu = regions[newSido]?.[0] ?? "";
-                    setSelectedSigungu(firstSigungu);
-                    if (newSido && firstSigungu) {
-                      handleAnalyzeAllHours({ sido: newSido, sigungu: firstSigungu });
-                    }
-                  }}
-                  className="w-full px-2 py-1.5 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  {sidoList.map((sido) => (
-                    <option key={sido} value={sido}>{tSido(sido)}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">{t("location.sigungu")}</label>
-                <select
-                  value={selectedSigungu}
-                  onChange={(e) => {
-                    const newSigungu = e.target.value;
-                    setSelectedSigungu(newSigungu);
-                    if (selectedSido && newSigungu) {
-                      handleAnalyzeAllHours({ sigungu: newSigungu });
-                    }
-                  }}
-                  className="w-full px-2 py-1.5 border border-slate-200 bg-white text-[11px] font-bold rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  {sigunguList.map((gu) => (
-                    <option key={gu} value={gu}>{tSigungu(gu)}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* 미니 구글맵 프레임 */}
-            <div className="relative h-48 rounded-2xl border border-slate-200 overflow-hidden shadow-inner mt-1">
-              <iframe
-                title="Google Maps"
-                width="100%"
-                height="100%"
-                frameBorder="0"
-                style={{ border: 0, filter: "opacity(0.85) grayscale(20%)" }}
-                src={`https://maps.google.com/maps?q=${encodeURIComponent(selectedSido + " " + selectedSigungu)}&t=&z=13&ie=UTF8&iwloc=&output=embed`}
-                allowFullScreen
-              />
-            </div>
-            
-            {/* 완료 버튼 */}
-            <button
-              onClick={() => setIsLocationModalOpen(false)}
-              className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-md transition-colors"
-            >
-              확인 및 적용
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+      {authOpen && <AuthModal mode={authMode} email={authEmail} password={authPassword} terms={termsAccepted} privacy={privacyAccepted} marketing={marketingAccepted} busy={busy} message={authMessage} error={authError} onClose={() => setAuthOpen(false)} onModeChange={setAuthMode} onEmailChange={setAuthEmail} onPasswordChange={setAuthPassword} onTermsChange={setTermsAccepted} onPrivacyChange={setPrivacyAccepted} onMarketingChange={setMarketingAccepted} onSubmit={submitAuth} onGoogle={() => void signInWithGoogle()} onReset={() => void sendPasswordReset()} />}
+      {locationPickerOpen && <LocationPicker current={location} savedLocations={savedLocations} catalog={locationCatalog} onClose={() => setLocationPickerOpen(false)} onLocate={useCurrentLocation} onSelect={selectLocation} onSaveCurrent={() => void saveCurrentLocation()} />}
+    </main>
   );
+}
+
+function TabButton({ label, active, onClick, icon }: { label: string; active: boolean; onClick: () => void; icon: React.ReactNode }) {
+  return <button onClick={onClick} className={`flex flex-col items-center gap-1 rounded-xl py-1 text-[10px] font-bold ${active ? "text-blue-600" : "text-slate-400"}`}>{icon}{label}</button>;
+}
+
+function activityScore(item: Recommendation, activity: Activity) {
+  const key = activity === "running" ? "러닝" : activity === "cycling" ? "라이딩" : "산책";
+  return item.suitability?.find((score) => score.name.includes(key))?.score ?? Math.max(0, 100 - Math.abs(item.utci_personalized - 22) * 6);
+}
+
+function HomeExperience({ location, profile, recommendation, hourlyRecommendations, busy, error, feedbackMessage, selectedFeedback, quickMenuOpen, onLocate, onRefresh, onOpenLocationPicker, onToggleQuickMenu, onSettings, onFeedback }: { location: SelectedLocation; profile: UserProfile; recommendation: Recommendation | null; hourlyRecommendations: Record<number, Recommendation>; busy: boolean; error: string | null; feedbackMessage: string | null; selectedFeedback: "too_hot" | "comfortable" | "too_cold" | null; quickMenuOpen: boolean; onLocate: () => void; onRefresh: () => void; onOpenLocationPicker: () => void; onToggleQuickMenu: () => void; onSettings: () => void; onFeedback: (feedbackType: "too_hot" | "comfortable" | "too_cold") => void }) {
+  const chartData = useMemo(() => Object.entries(hourlyRecommendations).map(([hour, item]) => ({ hour: `${String(hour).padStart(2, "0")}시`, 체감: Math.round(item.utci_personalized), 활동점수: Math.round(activityScore(item, profile.default_activity)) })), [hourlyRecommendations, profile.default_activity]);
+  const weather = recommendation?.weather;
+  const comfort = recommendation ? Math.max(8, Math.min(92, 50 + (22 - recommendation.utci_personalized) * 2.2)) : 50;
+  const clothing = recommendation?.recommendations.clothing ?? ["분석을 시작하면 오늘의 착장을 제안합니다."];
+
+  return <div className="space-y-4">
+    <div className="relative flex items-center justify-between">
+      <button onClick={onOpenLocationPicker} className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-left shadow-sm ring-1 ring-slate-100"><span className="grid h-7 w-7 place-items-center rounded-xl bg-sky-100 text-blue-600"><MapPin size={15} /></span><span><span className="block text-[10px] font-bold text-slate-400">분석 장소</span><span className="block max-w-44 truncate text-sm font-black text-slate-800">{location.label}</span></span><ChevronRight size={16} className="text-slate-400" /></button>
+      <button aria-label="빠른 메뉴" onClick={onToggleQuickMenu} className="grid h-10 w-10 place-items-center rounded-2xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-100"><Menu size={19} /></button>
+      {quickMenuOpen && <div className="absolute right-0 top-12 z-20 w-52 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-slate-100"><button onClick={onOpenLocationPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><MapPin size={15} className="text-blue-600" />장소 선택·저장</button><button onClick={onRefresh} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Sparkles size={15} className="text-blue-600" />오늘 분석 업데이트</button><button onClick={onSettings} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Settings size={15} className="text-blue-600" />개인화 설정</button></div>}
+    </div>
+
+    <section className="overflow-hidden rounded-[30px] bg-[linear-gradient(135deg,#0b5fc4,#168fd4_62%,#72c7ee)] p-5 text-white shadow-lg">
+      <div className="flex items-start justify-between"><div><p className="text-xs font-bold text-sky-100">{location.label} · 개인화 체감</p><p className="mt-1 text-5xl font-black tracking-tight">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 text-sm font-bold text-white/90">{recommendation?.thermal_sensation ?? "장소와 오늘의 날씨를 분석해 보세요"}</p></div><div className="relative grid h-24 w-24 place-items-center"><svg viewBox="0 0 120 120" className="h-24 w-24 -rotate-90"><circle cx="60" cy="60" r="45" fill="none" stroke="rgba(255,255,255,.22)" strokeWidth="10" /><circle cx="60" cy="60" r="45" fill="none" stroke="#fef08a" strokeWidth="10" strokeLinecap="round" strokeDasharray="283" strokeDashoffset={283 - (283 * comfort) / 100} /></svg><span className="absolute text-center text-[10px] font-black leading-tight">쾌적<br />지수</span></div></div>
+      <div className="mt-5 grid grid-cols-3 gap-2 border-t border-white/20 pt-4"><Metric icon={<Droplets size={16} />} label="습도" value={weather ? `${weather.humidity}%` : "--"} /><Metric icon={<Wind size={16} />} label="바람" value={weather ? `${weather.wind_speed}m/s` : "--"} /><Metric icon={<Umbrella size={16} />} label="강수" value={weather ? `${weather.precipitation_probability ?? 0}%` : "--"} /></div>
+      <button disabled={busy} onClick={onRefresh} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-white/15 px-4 py-3 text-xs font-black backdrop-blur disabled:opacity-50"><Sparkles size={15} />{busy ? "개인화 분석 중…" : "이 장소의 오늘 분석하기"}</button>
+    </section>
+
+    {error && <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">{error}</p>}
+
+    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">시간에 따른 체감 변화</p><h2 className="mt-1 font-black text-slate-900">언제 움직이면 좋을까요?</h2></div><span className="rounded-xl bg-sky-50 p-2 text-blue-600"><ActivityIcon size={18} /></span></div>{chartData.length ? <div className="mt-4 h-44"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}><defs><linearGradient id="thermalArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.42} /><stop offset="100%" stopColor="#0ea5e9" stopOpacity={0.02} /></linearGradient></defs><CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" /><XAxis dataKey="hour" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#64748b" }} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#64748b" }} /><Tooltip contentStyle={{ borderRadius: 14, border: "none", boxShadow: "0 8px 24px rgba(15,23,42,.12)", fontSize: 12 }} /><Area type="monotone" dataKey="체감" stroke="#0284c7" strokeWidth={3} fill="url(#thermalArea)" /><Line type="monotone" dataKey="활동점수" stroke="#22c55e" strokeWidth={2} dot={false} /></AreaChart></ResponsiveContainer></div> : <div className="mt-4 flex h-32 flex-col items-center justify-center rounded-2xl bg-slate-50 text-center"><CalendarDays className="text-slate-300" /><p className="mt-2 text-xs font-bold text-slate-500">장소 분석 후 6시간 흐름을 보여드립니다.</p></div>}<div className="mt-2 flex items-center gap-4 text-[10px] font-bold text-slate-500"><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-sky-600" />개인화 체감</span><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-green-500" />활동 적합도</span></div></section>
+
+    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-2xl bg-indigo-50 text-indigo-600"><Shirt size={20} /></span><div><p className="text-xs font-black text-indigo-600">오늘의 착장</p><h2 className="font-black">{activityLabels[profile.default_activity]}에 맞춘 레이어</h2></div></div><div className="mt-4 flex flex-wrap gap-2">{clothing.map((item) => <span key={item} className="rounded-full bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700">{item}</span>)}</div>{recommendation?.nudge?.nudge_warning && <p className="mt-3 rounded-2xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{recommendation.nudge.nudge_message}</p>}{recommendation && <div className="mt-4 border-t border-slate-100 pt-3"><div className="flex items-center justify-between"><p className="text-xs font-bold text-slate-500">이 추천의 실제 느낌은?</p><div className="flex gap-1"><button disabled={busy} onClick={() => onFeedback("too_cold")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "too_cold" ? "bg-sky-600 text-white" : "bg-sky-50 text-sky-700"}`}>추움</button><button disabled={busy} onClick={() => onFeedback("comfortable")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "comfortable" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700"}`}>좋음</button><button disabled={busy} onClick={() => onFeedback("too_hot")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "too_hot" ? "bg-rose-600 text-white" : "bg-rose-50 text-rose-700"}`}>더움</button></div></div>{feedbackMessage && <p className={`mt-3 rounded-xl p-3 text-xs font-bold ${feedbackMessage.startsWith("저장됨") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{feedbackMessage}</p>}{recommendation.personalization && <p className="mt-2 text-[11px] text-slate-500">누적 체감 보정 {recommendation.personalization.feedback_warmth_bias > 0 ? "+" : ""}{recommendation.personalization.feedback_warmth_bias.toFixed(1)} · 옷장 {recommendation.personalization.wardrobe_items_used}개 반영</p>}</div>}</section>
+    <button onClick={onLocate} className="flex w-full items-center justify-center gap-2 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs font-bold text-blue-700"><Navigation size={15} />내 현재 위치로 분석</button>
+  </div>;
+}
+
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return <div className="rounded-2xl bg-white/12 p-2 text-center"><span className="mx-auto block w-fit text-sky-100">{icon}</span><p className="mt-1 text-[10px] text-sky-100">{label}</p><p className="mt-0.5 text-xs font-black">{value}</p></div>;
+}
+
+function LocationPicker({ current, savedLocations, catalog, onClose, onLocate, onSelect, onSaveCurrent }: { current: SelectedLocation; savedLocations: SavedLocation[]; catalog: LocationOption[]; onClose: () => void; onLocate: () => void; onSelect: (location: LocationOption | SavedLocation) => void; onSaveCurrent: () => void }) {
+  const [query, setQuery] = useState("");
+  const filtered = catalog.filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 30);
+  return <div className="fixed inset-0 z-50 flex items-end bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5"><div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[30px] bg-[#f7faff] p-5 shadow-2xl sm:rounded-[30px]"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">WEATHER LOCATION</p><h2 className="mt-1 text-xl font-black">어디의 날씨를 분석할까요?</h2><p className="mt-1 text-xs text-slate-500">선택한 장소의 기후와 내 프로필을 함께 반영합니다.</p></div><button aria-label="닫기" onClick={onClose} className="rounded-full bg-slate-100 p-2 text-slate-600"><X size={18} /></button></div><div className="mt-5 flex gap-2"><button onClick={onLocate} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-blue-600 p-3 text-xs font-black text-white"><Navigation size={15} />현재 위치</button><button onClick={onSaveCurrent} className="flex items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white px-4 text-xs font-bold text-blue-700"><Plus size={15} />저장</button></div><div className="mt-4 flex items-center gap-2 rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-100"><Search size={17} className="text-slate-400" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="지역명으로 찾기 (예: 강남, 수원)" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400" /></div><div className="mt-5"><div className="flex items-center justify-between"><h3 className="text-xs font-black text-slate-500">현재 선택</h3><span className="text-[11px] text-slate-400">{current.latitude.toFixed(3)}, {current.longitude.toFixed(3)}</span></div><div className="mt-2 flex items-center gap-3 rounded-2xl bg-sky-100 p-3 text-blue-900"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-blue-600"><MapPin size={18} /></span><p className="text-sm font-black">{current.label}</p><Check size={17} className="ml-auto text-blue-600" /></div></div>{savedLocations.length > 0 && <div className="mt-5"><h3 className="text-xs font-black text-slate-500">저장한 장소</h3><div className="mt-2 grid gap-2">{savedLocations.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />)}</div></div>}<div className="mt-5"><h3 className="text-xs font-black text-slate-500">분석 가능한 지역</h3><div className="mt-2 grid gap-2">{filtered.length ? filtered.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />) : <p className="rounded-2xl bg-white p-4 text-center text-xs text-slate-500">검색 결과가 없습니다.</p>}</div></div></div></div>;
+}
+
+function LocationRow({ item, onSelect }: { item: LocationOption | SavedLocation; onSelect: (location: LocationOption | SavedLocation) => void }) {
+  return <button onClick={() => onSelect(item)} className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:ring-blue-200"><span className="grid h-9 w-9 place-items-center rounded-xl bg-slate-100 text-slate-600"><MapPin size={17} /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-slate-800">{item.name}</span><span className="mt-0.5 block text-[11px] text-slate-500">{item.latitude.toFixed(3)}, {item.longitude.toFixed(3)}</span></span><ChevronRight size={16} className="text-slate-400" /></button>;
+}
+
+function HomeTab({ location, profile, recommendation, busy, error, onLocate, onRefresh, onSettings, onFeedback }: { location: { label: string }; profile: UserProfile; recommendation: Recommendation | null; busy: boolean; error: string | null; onLocate: () => void; onRefresh: () => void; onSettings: () => void; onFeedback: (feedbackType: "too_hot" | "comfortable" | "too_cold") => void }) {
+  const clothing = recommendation?.recommendations.clothing ?? ["날씨를 불러오면 맞춤 착장을 제안합니다."];
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between"><button onClick={onLocate} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-bold shadow-sm"><MapPin size={14} className="text-blue-600" />{location.label}</button><button onClick={onSettings} className="rounded-full bg-white p-2 shadow-sm"><Menu size={16} /></button></div>
+    <section className="rounded-[28px] bg-[linear-gradient(135deg,#1b8bd6,#2a4cb4)] p-5 text-white shadow-lg"><div className="flex items-start justify-between"><div><p className="text-sm text-sky-100">오늘의 체감</p><p className="mt-1 text-5xl font-black">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 text-sm font-bold">{recommendation?.thermal_sensation ?? "날씨를 업데이트해 주세요"}</p></div><CloudSun size={62} className="text-sky-200" /></div><button disabled={busy} onClick={onRefresh} className="mt-5 rounded-xl bg-white/15 px-3 py-2 text-xs font-bold disabled:opacity-50">{busy ? "날씨 분석 중…" : "현재 날씨로 추천받기"}</button></section>
+    {error && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{error}</p>}
+    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center gap-2"><Shirt className="text-blue-600" /><div><h1 className="font-black">오늘의 착장</h1><p className="text-xs text-slate-500">{activityLabels[profile.default_activity]} · {environmentLabels[profile.default_environment]}</p></div></div><ul className="mt-4 space-y-2">{clothing.map((item) => <li key={item} className="rounded-xl bg-sky-50 px-3 py-2 text-sm font-semibold text-slate-700">{item}</li>)}</ul>{recommendation?.nudge?.nudge_warning && <p className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{recommendation.nudge.nudge_message}</p>}{recommendation && <div className="mt-4 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">추천 착용감은 어땠나요?</p><div className="mt-2 grid grid-cols-3 gap-2"><button onClick={() => onFeedback("too_cold")} className="rounded-lg bg-sky-50 px-2 py-2 text-xs font-bold text-sky-700">추웠어요</button><button onClick={() => onFeedback("comfortable")} className="rounded-lg bg-emerald-50 px-2 py-2 text-xs font-bold text-emerald-700">좋았어요</button><button onClick={() => onFeedback("too_hot")} className="rounded-lg bg-rose-50 px-2 py-2 text-xs font-bold text-rose-700">더웠어요</button></div></div>}</section>
+    <section className="grid grid-cols-3 gap-2">{[[Droplets, recommendation?.weather?.humidity ? `${recommendation.weather.humidity}%` : "습도"], [Wind, recommendation?.weather?.wind_speed ? `${recommendation.weather.wind_speed}m/s` : "바람"], [Umbrella, "강수 확인"]].map(([Icon, label]) => { const MetricIcon = Icon as typeof Droplets; return <div key={String(label)} className="rounded-2xl bg-white p-3 text-center shadow-sm"><MetricIcon className="mx-auto text-blue-500" size={18} /><p className="mt-1 text-[11px] font-bold text-slate-600">{label as string}</p></div>; })}</section>
+  </div>;
+}
+
+function HourlyTab({ activity, recommendations, onRefresh, busy, error }: { activity: Activity; recommendations: Record<number, Recommendation>; onRefresh: () => void; busy: boolean; error: string | null }) {
+  const now = new Date();
+  const hours = Array.from({ length: Math.min(6, 24 - now.getHours()) }, (_, index) => now.getHours() + index);
+  const scoreForActivity = (item: Recommendation) => {
+    const key = activity === "running" ? "러닝" : activity === "cycling" ? "라이딩" : "산책";
+    return item.suitability?.find((score) => score.name.includes(key))?.score ?? Math.max(0, 100 - Math.abs(item.utci_personalized - 22) * 6);
+  };
+  return <div className="space-y-4"><div><p className="text-sm font-black text-blue-600">활동 계획</p><h1 className="mt-1 text-2xl font-black">언제 활동하면 좋을까요?</h1><p className="mt-1 text-sm text-slate-500">{activityLabels[activity]} 기준의 실제 시간별 예보를 비교합니다.</p></div><button onClick={onRefresh} disabled={busy} className="w-full rounded-2xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50">{busy ? "시간별 분석 중…" : "오늘 시간대 다시 분석"}</button>{error && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{error}</p>}<div className="space-y-2">{hours.map((hour) => { const item = recommendations[hour]; const score = item ? scoreForActivity(item) : 0; return <div key={hour} className="rounded-2xl bg-white p-4 shadow-sm"><div className="flex items-center gap-3"><p className="w-12 text-sm font-black">{`${String(hour).padStart(2, "0")}:00`}</p><div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${score >= 75 ? "bg-emerald-500" : score >= 50 ? "bg-amber-400" : "bg-rose-500"}`} style={{ width: `${score}%` }} /></div><p className="w-12 text-right text-xs font-bold text-slate-500">{item ? `${Math.round(score)}점` : "--"}</p></div>{item && <p className="mt-2 text-xs text-slate-500">체감 {Math.round(item.utci_personalized)}° · 강수 {item.weather?.precipitation_probability ?? 0}% · {item.thermal_sensation}</p>}</div>; })}</div></div>;
+}
+
+function ClothingTab({ user, items, busy, message, onAdd, onDelete, onLogin }: { user: User | null; items: WardrobeItem[]; busy: boolean; message: string | null; onAdd: (item: Omit<WardrobeItem, "id">) => Promise<void>; onDelete: (itemId: string) => Promise<void>; onLogin: () => void }) {
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState<WardrobeItem["category"]>("top");
+  const [warmth, setWarmth] = useState(0);
+  const [waterResistant, setWaterResistant] = useState(false);
+  const [favorite, setFavorite] = useState(false);
+  const [seasons, setSeasons] = useState<WardrobeItem["seasons"]>(["spring", "summer", "fall", "winter"]);
+  const [inLaundry, setInLaundry] = useState(false);
+  const categories: Record<WardrobeItem["category"], string> = { top: "상의", bottom: "하의", outerwear: "아우터", shoes: "신발", accessory: "소품", other: "기타" };
+  const seasonLabels: Record<WardrobeItem["seasons"][number], string> = { spring: "봄", summer: "여름", fall: "가을", winter: "겨울" };
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    await onAdd({ name: name.trim(), category, warmth_level: warmth, water_resistant: waterResistant, is_favorite: favorite, seasons, is_in_laundry: inLaundry });
+    setName("");
+  }
+  if (!user) return <div className="space-y-4"><div><p className="text-sm font-black text-blue-600">내 옷장</p><h1 className="mt-1 text-2xl font-black">내 옷으로 추천받기</h1></div><div className="rounded-3xl border border-dashed border-sky-300 bg-sky-50 p-6 text-center"><Shirt className="mx-auto text-sky-500" size={40} /><p className="mt-3 text-sm font-bold text-slate-700">로그인 후 내 옷장을 만들 수 있습니다.</p><button onClick={onLogin} className="mt-4 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white">로그인하기</button></div></div>;
+  const toggleSeason = (season: WardrobeItem["seasons"][number]) => setSeasons((selected) => selected.includes(season) ? selected.filter((item) => item !== season) : [...selected, season]);
+  return <div className="space-y-4"><div><p className="text-sm font-black text-blue-600">내 옷장</p><h1 className="mt-1 text-2xl font-black">내 옷으로 추천받기</h1><p className="mt-1 text-sm text-slate-500">보유한 옷의 보온성·계절·세탁 상태를 추천에 활용합니다.</p></div><form onSubmit={submit} className="space-y-3 rounded-3xl bg-white p-4 shadow-sm"><input value={name} onChange={(event) => setName(event.target.value)} maxLength={80} placeholder="예: 얇은 바람막이" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" /><div className="grid grid-cols-2 gap-2"><select value={category} onChange={(event) => setCategory(event.target.value as WardrobeItem["category"])} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">{Object.entries(categories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={warmth} onChange={(event) => setWarmth(Number(event.target.value))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm"><option value={-2}>아주 얇음</option><option value={-1}>얇음</option><option value={0}>보통</option><option value={1}>따뜻함</option><option value={2}>매우 따뜻함</option></select></div><div className="grid grid-cols-2 gap-2 text-xs text-slate-600"><label className="flex items-center gap-2"><input type="checkbox" checked={waterResistant} onChange={(event) => setWaterResistant(event.target.checked)} /> 방수/발수 가능</label><label className="flex items-center gap-2"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /> 즐겨 입음</label><label className="flex items-center gap-2"><input type="checkbox" checked={inLaundry} onChange={(event) => setInLaundry(event.target.checked)} /> 세탁 중</label></div><div><p className="text-xs font-bold text-slate-600">사용 계절</p><div className="mt-2 grid grid-cols-4 gap-1">{Object.entries(seasonLabels).map(([season, label]) => <label key={season} className="flex items-center justify-center gap-1 text-[11px] text-slate-600"><input type="checkbox" checked={seasons.includes(season as WardrobeItem["seasons"][number])} onChange={() => toggleSeason(season as WardrobeItem["seasons"][number])} />{label}</label>)}</div></div><button disabled={busy || seasons.length === 0} className="flex w-full items-center justify-center gap-1 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"><Plus size={14} /> 옷장에 추가</button></form>{message && <p className="rounded-xl bg-sky-50 p-3 text-xs text-sky-800">{message}</p>}<div className="space-y-2">{items.length === 0 ? <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm text-slate-500">첫 의류를 등록해 보세요.</p> : items.map((item) => <div key={item.id} className="flex items-center justify-between rounded-2xl bg-white p-4 shadow-sm"><div><p className="text-sm font-bold">{item.is_favorite ? "★ " : ""}{item.name}{item.is_in_laundry ? " · 세탁 중" : ""}</p><p className="mt-1 text-xs text-slate-500">{categories[item.category]} · 보온 {item.warmth_level > 0 ? `+${item.warmth_level}` : item.warmth_level} {item.water_resistant ? "· 방수" : ""} · {(item.seasons ?? []).map((season) => seasonLabels[season]).join("/")}</p></div><button aria-label={`${item.name} 삭제`} disabled={busy} onClick={() => void onDelete(item.id)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500"><Trash2 size={16} /></button></div>)}</div></div>;
+}
+
+function SettingsTab({ user, profile, setProfile, busy, message, onLoad, onSave, onLogin, onSignOutLocal, onSignOutAll, onEmailChange, onPasswordChange, onGoogleLink, onGoogleUnlink, onExport, onFeedbackReset, onDeletionRequest, onDeletionCancel, location, savedLocations, onLoadLocations, onSaveLocation, onSelectLocation, onDeleteLocation }: { user: User | null; profile: UserProfile; setProfile: (profile: UserProfile) => void; busy: boolean; message: string | null; onLoad: () => void; onSave: () => void; onLogin: () => void; onSignOutLocal: () => void; onSignOutAll: () => void; onEmailChange: (email: string) => Promise<void>; onPasswordChange: (password: string) => Promise<void>; onGoogleLink: () => Promise<void>; onGoogleUnlink: () => Promise<void>; onExport: () => Promise<void>; onFeedbackReset: () => Promise<void>; onDeletionRequest: (phrase: string) => Promise<void>; onDeletionCancel: () => Promise<void>; location: { label: string }; savedLocations: SavedLocation[]; onLoadLocations: () => Promise<void>; onSaveLocation: () => Promise<void>; onSelectLocation: (location: SavedLocation) => void; onDeleteLocation: (locationId: string) => Promise<void> }) {
+  const update = <K extends keyof UserProfile>(key: K, value: UserProfile[K]) => setProfile({ ...profile, [key]: value });
+  const [nextEmail, setNextEmail] = useState(user?.email ?? "");
+  const [nextPassword, setNextPassword] = useState("");
+  const [deletePhrase, setDeletePhrase] = useState("");
+
+  if (!user) return <div className="space-y-4"><div><p className="text-sm font-black text-blue-600">개인화 설정</p><h1 className="mt-1 text-2xl font-black">내 체감에 맞춰 볼까요?</h1><p className="mt-1 text-sm text-slate-500">계정을 만들면 신체 정보와 활동 선호를 안전하게 저장할 수 있습니다.</p></div><button onClick={onLogin} className="w-full rounded-2xl bg-blue-600 p-4 text-sm font-bold text-white">로그인 또는 회원가입</button></div>;
+
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between"><div><p className="text-sm font-black text-blue-600">계정 및 개인화</p><h1 className="mt-1 text-xl font-black">{user.email}</h1></div><UserRound className="text-blue-600" /></div>
+    <div className="flex gap-2"><button onClick={onLoad} disabled={busy} className="flex-1 rounded-xl border border-slate-200 bg-white p-3 text-xs font-bold">저장 정보 불러오기</button><button onClick={onSignOutLocal} className="rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-500">이 기기 로그아웃</button></div>
+    {message && <p className="rounded-xl bg-sky-50 p-3 text-xs text-sky-800">{message}</p>}
+    <section className="space-y-3 rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-black">로그인 정보</h2><Field label="변경할 이메일" value={nextEmail} onChange={setNextEmail} type="text" /><button onClick={() => void onEmailChange(nextEmail)} disabled={busy || !nextEmail} className="w-full rounded-xl border border-blue-200 p-3 text-xs font-bold text-blue-700 disabled:opacity-50">이메일 변경 요청</button><label className="block text-xs font-bold text-slate-600">새 비밀번호<input minLength={8} type="password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm" /></label><button onClick={() => { void onPasswordChange(nextPassword); setNextPassword(""); }} disabled={busy || nextPassword.length < 8} className="w-full rounded-xl border border-blue-200 p-3 text-xs font-bold text-blue-700 disabled:opacity-50">비밀번호 변경</button><div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold text-slate-700">Google 계정</p><p className="mt-1 text-xs text-slate-500">{user.identities?.some((identity) => identity.provider === "google") ? "연결됨" : "연결되지 않음"}</p><div className="mt-2 grid grid-cols-2 gap-2">{user.identities?.some((identity) => identity.provider === "google") ? <button onClick={() => void onGoogleUnlink()} disabled={busy} className="rounded-lg border border-slate-200 bg-white p-2 text-xs font-bold text-slate-600 disabled:opacity-50">Google 연결 해제</button> : <button onClick={() => void onGoogleLink()} disabled={busy} className="rounded-lg border border-blue-200 bg-white p-2 text-xs font-bold text-blue-700 disabled:opacity-50">Google 연결</button>}<button onClick={onSignOutAll} disabled={busy} className="rounded-lg border border-slate-200 bg-white p-2 text-xs font-bold text-slate-600 disabled:opacity-50">모든 기기 로그아웃</button></div></div></section>
+    <section className="space-y-3 rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-black">선택 개인화 정보</h2><p className="text-xs text-slate-500">입력하지 않아도 일반 추천을 사용할 수 있습니다.</p><div className="grid grid-cols-2 gap-3"><Field label="키 (cm)" value={profile.height_cm} onChange={(value) => update("height_cm", value)} type="number" /><Field label="몸무게 (kg)" value={profile.weight_kg} onChange={(value) => update("weight_kg", value)} type="number" /><Field label="체지방률 (%)" value={profile.body_fat_pct} onChange={(value) => update("body_fat_pct", value)} type="number" /><Field label="출생 연도" value={profile.birth_year} onChange={(value) => update("birth_year", value)} type="number" /></div><label className="block text-xs font-bold text-slate-600">성별(선택)<select value={profile.sex} onChange={(event) => update("sex", event.target.value as Sex)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm"><option value="undisclosed">응답 안 함</option><option value="female">여성</option><option value="male">남성</option></select></label></section>
+    <section className="space-y-3 rounded-3xl bg-white p-5 shadow-sm"><h2 className="font-black">활동과 환경</h2><label className="block text-xs font-bold text-slate-600">기본 활동<select value={profile.default_activity} onChange={(event) => update("default_activity", event.target.value as Activity)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm">{Object.entries(activityLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="block text-xs font-bold text-slate-600">환경<select value={profile.default_environment} onChange={(event) => update("default_environment", event.target.value as Environment)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm">{Object.entries(environmentLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>{profile.default_environment !== "outdoor" && <Field label="실내 온도 (°C)" value={profile.indoor_temperature_c} onChange={(value) => update("indoor_temperature_c", value)} type="number" />}<label className="block text-xs font-bold text-slate-600">추위/더위 민감도<div className="mt-2 flex items-center gap-3"><input type="range" min="-2" max="2" step="1" value={profile.thermal_sensitivity} onChange={(event) => update("thermal_sensitivity", Number(event.target.value))} className="flex-1 accent-blue-600" /><span className="w-14 text-center text-xs font-black">{profile.thermal_sensitivity > 0 ? `더위 +${profile.thermal_sensitivity}` : profile.thermal_sensitivity < 0 ? `추위 ${profile.thermal_sensitivity}` : "보통"}</span></div></label></section>
+    <button onClick={onSave} disabled={busy} className="w-full rounded-2xl bg-blue-600 p-4 text-sm font-black text-white disabled:opacity-50">{busy ? "저장 중…" : "개인화 프로필 저장"}</button>
+    <section className="space-y-3 rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-black">즐겨찾는 장소</h2><button onClick={() => void onLoadLocations()} disabled={busy} className="text-xs font-bold text-blue-600">새로고침</button></div><p className="text-xs text-slate-500">현재 위치: {location.label}</p><button onClick={() => void onSaveLocation()} disabled={busy} className="w-full rounded-xl border border-blue-200 p-3 text-xs font-bold text-blue-700 disabled:opacity-50">현재 장소 저장</button><div className="space-y-2">{savedLocations.length === 0 ? <p className="text-center text-xs text-slate-400">저장된 장소가 없습니다.</p> : savedLocations.map((item) => <div key={item.id} className="flex items-center gap-2 rounded-xl bg-slate-50 p-3"><button onClick={() => onSelectLocation(item)} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-bold">{item.name}</p><p className="text-[11px] text-slate-500">{item.latitude.toFixed(3)}, {item.longitude.toFixed(3)}</p></button><button aria-label={`${item.name} 삭제`} onClick={() => void onDeleteLocation(item.id)} disabled={busy} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500"><Trash2 size={15} /></button></div>)}</div></section>
+    <section className="space-y-3 rounded-3xl border border-rose-200 bg-rose-50 p-5"><h2 className="font-black text-rose-800">데이터와 계정 삭제</h2><button onClick={() => void onExport()} disabled={busy} className="w-full rounded-xl border border-rose-200 bg-white p-3 text-xs font-bold text-rose-700 disabled:opacity-50">내 데이터 JSON 내보내기</button><button onClick={() => void onFeedbackReset()} disabled={busy} className="w-full rounded-xl border border-rose-200 bg-white p-3 text-xs font-bold text-rose-700 disabled:opacity-50">누적 착용감 피드백 초기화</button><p className="text-xs text-rose-700">탈퇴 요청 후 30일 동안 취소할 수 있습니다. 요청 전 다시 로그인해야 하며, 아래에 DELETE를 입력하세요.</p><Field label="확인 문구" value={deletePhrase} onChange={setDeletePhrase} type="text" /><button onClick={() => void onDeletionRequest(deletePhrase)} disabled={busy || deletePhrase !== "DELETE"} className="w-full rounded-xl bg-rose-600 p-3 text-xs font-bold text-white disabled:opacity-50">30일 후 계정 삭제 요청</button><button onClick={() => void onDeletionCancel()} disabled={busy} className="w-full rounded-xl border border-rose-300 bg-white p-3 text-xs font-bold text-rose-700 disabled:opacity-50">탈퇴 요청 취소</button></section>
+  </div>;
+}
+
+function Field({ label, value, onChange, type }: { label: string; value: string; onChange: (value: string) => void; type: "number" | "text" }) {
+  return <label className="block text-xs font-bold text-slate-600">{label}<input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm" /></label>;
+}
+
+function AuthModal({ mode, email, password, terms, privacy, marketing, busy, message, error, onClose, onModeChange, onEmailChange, onPasswordChange, onTermsChange, onPrivacyChange, onMarketingChange, onSubmit, onGoogle, onReset }: { mode: "signIn" | "signUp"; email: string; password: string; terms: boolean; privacy: boolean; marketing: boolean; busy: boolean; message: string | null; error: string | null; onClose: () => void; onModeChange: (mode: "signIn" | "signUp") => void; onEmailChange: (email: string) => void; onPasswordChange: (password: string) => void; onTermsChange: (value: boolean) => void; onPrivacyChange: (value: boolean) => void; onMarketingChange: (value: boolean) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onGoogle: () => void; onReset: () => void }) {
+  const isSignUp = mode === "signUp";
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-5 backdrop-blur-sm"><div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between"><div><p className="text-sm font-black text-blue-600">THERMAL GUIDE</p><h2 className="mt-1 text-xl font-black">{isSignUp ? "계정 만들기" : "로그인"}</h2></div><button onClick={onClose} className="rounded-full bg-slate-100 px-3 py-1 text-sm">×</button></div>{error && <p className="mt-4 rounded-xl bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}{message && <p className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-700">{message}</p>}<form onSubmit={onSubmit} className="mt-5 space-y-3"><Field label="이메일" value={email} onChange={onEmailChange} type="text" /><label className="block text-xs font-bold text-slate-600">비밀번호<input required minLength={8} type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 p-3 text-sm" /></label>{isSignUp && <div className="space-y-2 rounded-xl bg-slate-50 p-3 text-xs"><label className="flex gap-2"><input type="checkbox" checked={terms} onChange={(event) => onTermsChange(event.target.checked)} />[필수] 이용약관 동의</label><label className="flex gap-2"><input type="checkbox" checked={privacy} onChange={(event) => onPrivacyChange(event.target.checked)} />[필수] 개인정보 처리방침 동의</label><label className="flex gap-2"><input type="checkbox" checked={marketing} onChange={(event) => onMarketingChange(event.target.checked)} />[선택] 제품 소식 수신</label></div>}<button disabled={busy} className="w-full rounded-xl bg-blue-600 p-3 text-sm font-black text-white disabled:opacity-50">{isSignUp ? "이메일로 회원가입" : "로그인"}</button></form><button onClick={onGoogle} className="mt-3 w-full rounded-xl border border-slate-200 p-3 text-sm font-bold">Google로 계속하기</button>{!isSignUp && <button onClick={onReset} className="mt-3 w-full text-xs font-bold text-blue-600">비밀번호를 잊으셨나요?</button>}<button onClick={() => onModeChange(isSignUp ? "signIn" : "signUp")} className="mt-5 w-full text-xs font-bold text-slate-500">{isSignUp ? "이미 계정이 있으신가요? 로그인" : "계정이 없으신가요? 회원가입"}</button></div></div>;
 }

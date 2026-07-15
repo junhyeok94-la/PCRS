@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from typing import Optional, Dict, Any, List
@@ -7,12 +8,322 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# Prefer the explicit project-scoped name; retain SERVICE_ROLE_KEY compatibility
+# for existing deployment environments.
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables.")
 
 # Supabase Client Initialization
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def get_user_scoped_client(access_token: str) -> Client:
+    """Create an isolated client whose database requests are evaluated by RLS.
+
+    A module-level client must not be re-authenticated per request: doing so could
+    leak one user's JWT into another concurrent request.  This short-lived client
+    keeps the caller's JWT local to the request and lets Supabase RLS enforce
+    ownership for the new account tables.
+    """
+    client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    client.postgrest.auth(access_token)
+    return client
+
+
+def get_admin_client() -> Optional[Client]:
+    """Return a server-only Supabase admin client when deletion is configured."""
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+def get_phase1_profile(access_token: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """Read the authenticated user's Phase 1 personalization profile."""
+    try:
+        response = get_user_scoped_client(access_token).table("profiles") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .maybe_single() \
+            .execute()
+        return response.data
+    except Exception as exc:
+        print(f"Debug [get_phase1_profile]: {exc}")
+        return None
+
+
+def upsert_phase1_profile(access_token: str, user_id: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Upsert a profile under the caller's RLS-scoped Supabase client."""
+    try:
+        payload = {"user_id": user_id, **profile_data}
+        response = get_user_scoped_client(access_token).table("profiles") \
+            .upsert(payload, on_conflict="user_id") \
+            .execute()
+        return response.data[0] if response.data else payload
+    except Exception as exc:
+        print(f"Debug [upsert_phase1_profile]: {exc}")
+        return None
+
+
+def get_phase1_consents(access_token: str, user_id: str) -> List[Dict[str, Any]]:
+    """Read the authenticated user's latest consent records."""
+    try:
+        response = get_user_scoped_client(access_token).table("user_consents") \
+            .select("consent_type, policy_version, granted_at, revoked_at, updated_at") \
+            .eq("user_id", user_id) \
+            .order("consent_type") \
+            .execute()
+        return response.data or []
+    except Exception as exc:
+        print(f"Debug [get_phase1_consents]: {exc}")
+        return []
+
+
+def upsert_phase1_consents(
+    access_token: str,
+    user_id: str,
+    policy_version: str,
+    choices: Dict[str, bool],
+) -> Optional[List[Dict[str, Any]]]:
+    """Record the current terms, privacy, and optional marketing choices."""
+    try:
+        changed_at = datetime.now(timezone.utc).isoformat()
+        records = []
+        for consent_type, granted in choices.items():
+            records.append({
+                "user_id": user_id,
+                "consent_type": consent_type,
+                "policy_version": policy_version,
+                "granted_at": changed_at if granted else None,
+                "revoked_at": None if granted else changed_at,
+            })
+        response = get_user_scoped_client(access_token).table("user_consents") \
+            .upsert(records, on_conflict="user_id,consent_type") \
+            .execute()
+        return response.data or records
+    except Exception as exc:
+        print(f"Debug [upsert_phase1_consents]: {exc}")
+        return None
+
+
+def get_wardrobe_items(access_token: str, user_id: str) -> List[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("wardrobe_items") \
+            .select("*") \
+            .eq("user_id", user_id) \
+            .eq("archived", False) \
+            .order("created_at", desc=True) \
+            .execute()
+        return response.data or []
+    except Exception as exc:
+        print(f"Debug [get_wardrobe_items]: {exc}")
+        return []
+
+
+def create_wardrobe_item(access_token: str, user_id: str, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("wardrobe_items") \
+            .insert({"user_id": user_id, **item}) \
+            .execute()
+        return response.data[0] if response.data else None
+    except Exception as exc:
+        print(f"Debug [create_wardrobe_item]: {exc}")
+        return None
+
+
+def archive_wardrobe_item(access_token: str, user_id: str, item_id: str) -> bool:
+    try:
+        response = get_user_scoped_client(access_token).table("wardrobe_items") \
+            .update({"archived": True}) \
+            .eq("id", item_id) \
+            .eq("user_id", user_id) \
+            .execute()
+        return bool(response.data)
+    except Exception as exc:
+        print(f"Debug [archive_wardrobe_item]: {exc}")
+        return False
+
+
+def update_wardrobe_item(access_token: str, user_id: str, item_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("wardrobe_items") \
+            .update(changes).eq("id", item_id).eq("user_id", user_id).eq("archived", False).execute()
+        return response.data[0] if response.data else None
+    except Exception as exc:
+        print(f"Debug [update_wardrobe_item]: {exc}")
+        return None
+
+
+def get_user_locations(access_token: str, user_id: str) -> List[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("user_locations") \
+            .select("*").eq("user_id", user_id).order("is_favorite", desc=True).order("created_at", desc=True).execute()
+        return response.data or []
+    except Exception as exc:
+        print(f"Debug [get_user_locations]: {exc}")
+        return []
+
+
+def create_user_location(access_token: str, user_id: str, location: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("user_locations") \
+            .insert({"user_id": user_id, **location}).execute()
+        return response.data[0] if response.data else None
+    except Exception as exc:
+        print(f"Debug [create_user_location]: {exc}")
+        return None
+
+
+def update_user_location(access_token: str, user_id: str, location_id: str, changes: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("user_locations") \
+            .update(changes).eq("id", location_id).eq("user_id", user_id).execute()
+        return response.data[0] if response.data else None
+    except Exception as exc:
+        print(f"Debug [update_user_location]: {exc}")
+        return None
+
+
+def delete_user_location(access_token: str, user_id: str, location_id: str) -> bool:
+    try:
+        response = get_user_scoped_client(access_token).table("user_locations") \
+            .delete().eq("id", location_id).eq("user_id", user_id).execute()
+        return bool(response.data)
+    except Exception as exc:
+        print(f"Debug [delete_user_location]: {exc}")
+        return False
+
+
+def create_recommendation_feedback(access_token: str, user_id: str, feedback: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_user_scoped_client(access_token).table("recommendation_feedback") \
+            .insert({"user_id": user_id, **feedback}) \
+            .execute()
+        return response.data[0] if response.data else None
+    except Exception as exc:
+        print(f"Debug [create_recommendation_feedback]: {exc}")
+        return None
+
+
+def get_recommendation_feedback_warmth_bias(access_token: str, user_id: str) -> float:
+    """Return a small, explainable warmth adjustment from the latest feedback."""
+    try:
+        rows = get_user_scoped_client(access_token).table("recommendation_feedback") \
+            .select("feedback_type") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True).limit(12).execute().data or []
+        if not rows:
+            return 0.0
+        values = {"too_cold": 1.0, "comfortable": 0.0, "too_hot": -1.0}
+        return round(max(-1.0, min(1.0, sum(values.get(row["feedback_type"], 0.0) for row in rows) / len(rows))), 2)
+    except Exception as exc:
+        print(f"Debug [get_recommendation_feedback_warmth_bias]: {exc}")
+        return 0.0
+
+
+def clear_recommendation_feedback(access_token: str, user_id: str) -> bool:
+    try:
+        get_user_scoped_client(access_token).table("recommendation_feedback") \
+            .delete().eq("user_id", user_id).execute()
+        return True
+    except Exception as exc:
+        print(f"Debug [clear_recommendation_feedback]: {exc}")
+        return False
+
+
+def clear_recommendation_feedback(access_token: str, user_id: str) -> bool:
+    try:
+        get_user_scoped_client(access_token).table("recommendation_feedback") \
+            .delete().eq("user_id", user_id).execute()
+        return True
+    except Exception as exc:
+        print(f"Debug [clear_recommendation_feedback]: {exc}")
+        return False
+
+
+def export_user_data(access_token: str, user_id: str) -> Dict[str, Any]:
+    """Assemble the caller's RLS-protected personal data into a JSON export."""
+    client = get_user_scoped_client(access_token)
+    try:
+        profile = client.table("profiles").select("*").eq("user_id", user_id).maybe_single().execute().data
+        consents = client.table("user_consents").select("*").eq("user_id", user_id).order("consent_type").execute().data or []
+        wardrobe = client.table("wardrobe_items").select("*").eq("user_id", user_id).order("created_at", desc=True).execute().data or []
+        feedback = client.table("recommendation_feedback").select("*").eq("user_id", user_id).order("created_at", desc=True).execute().data or []
+        return {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "profile": profile,
+            "consents": consents,
+            "wardrobe_items": wardrobe,
+            "recommendation_feedback": feedback,
+        }
+    except Exception as exc:
+        print(f"Debug [export_user_data]: {exc}")
+        return {}
+
+
+def get_account_deletion_request(access_token: str, user_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        return get_user_scoped_client(access_token).table("account_deletion_requests") \
+            .select("requested_at, scheduled_delete_at, cancelled_at, executed_at") \
+            .eq("user_id", user_id).maybe_single().execute().data
+    except Exception as exc:
+        print(f"Debug [get_account_deletion_request]: {exc}")
+        return None
+
+
+def request_account_deletion(access_token: str, user_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        now = datetime.now(timezone.utc)
+        payload = {
+            "user_id": user_id,
+            "requested_at": now.isoformat(),
+            "scheduled_delete_at": (now + timedelta(days=30)).isoformat(),
+            "cancelled_at": None,
+            "executed_at": None,
+        }
+        response = get_user_scoped_client(access_token).table("account_deletion_requests") \
+            .upsert(payload, on_conflict="user_id").execute()
+        return response.data[0] if response.data else payload
+    except Exception as exc:
+        print(f"Debug [request_account_deletion]: {exc}")
+        return None
+
+
+def cancel_account_deletion(access_token: str, user_id: str) -> bool:
+    try:
+        response = get_user_scoped_client(access_token).table("account_deletion_requests") \
+            .update({"cancelled_at": datetime.now(timezone.utc).isoformat()}) \
+            .eq("user_id", user_id).is_("executed_at", "null").execute()
+        return bool(response.data)
+    except Exception as exc:
+        print(f"Debug [cancel_account_deletion]: {exc}")
+        return False
+
+
+def execute_due_account_deletions() -> int:
+    """Delete expired accounts with the server-only service key; return count."""
+    admin = get_admin_client()
+    if admin is None:
+        print("⚠️ Account deletion worker skipped: SUPABASE_SERVICE_ROLE_KEY is not configured.")
+        return 0
+    try:
+        due = admin.table("account_deletion_requests") \
+            .select("user_id") \
+            .lte("scheduled_delete_at", datetime.now(timezone.utc).isoformat()) \
+            .is_("cancelled_at", "null").is_("executed_at", "null").execute().data or []
+        completed = 0
+        for request in due:
+            user_id = request["user_id"]
+            try:
+                admin.auth.admin.delete_user(user_id)
+                completed += 1
+            except Exception as exc:
+                print(f"⚠️ Account deletion failed for {user_id}: {exc}")
+        return completed
+    except Exception as exc:
+        print(f"⚠️ Account deletion worker failed: {exc}")
+        return 0
 
 # 전국 거점 위경도 매핑 딕셔너리 (Fallback 및 Seeding용)
 REGIONAL_GPS_FALLBACK = {
