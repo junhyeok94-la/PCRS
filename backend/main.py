@@ -592,7 +592,108 @@ async def get_recommendation(payload: RecommendationRequest):
                 f"하지만 {activity_ko} 중인 회원님의 개인 맞춤 온도는 {utci_personalized:.1f}°C로 더 더울 수 있으니 미지근한 물을 자주 보충하세요!"
             )
 
-    # ── 7. 최종 JSON 반환 ─────────────────────────────
+    # ── 7. 야외 활동별 적합도 산출 (백엔드 이관 고도화) ───────────
+    # 기상 변수 안전 추출
+    apparent_temp = hourly_data.get("apparent_temperature", [tdb]*168)[min(len(hourly_data.get("apparent_temperature", [tdb]*168))-1, hour_idx)]
+    uv_val = hourly_data.get("uv_index", [0.0]*168)[min(len(hourly_data.get("uv_index", [0.0]*168))-1, hour_idx)]
+    precip_prob = hourly_data.get("precipitation_probability", [0]*168)[min(len(hourly_data.get("precipitation_probability", [0]*168))-1, hour_idx)]
+    pm10_val = hourly_data.get("pm10", [35.0]*168)[min(len(hourly_data.get("pm10", [35.0]*168))-1, hour_idx)]
+    pm25_val = hourly_data.get("pm2_5", [15.0]*168)[min(len(hourly_data.get("pm2_5", [15.0]*168))-1, hour_idx)]
+
+    run_score = 95
+    cycle_score = 95
+    walk_score = 95
+
+    # 1) 열 스트레스 (UTCI 기반 감점)
+    if utci_personalized >= 38:
+        run_score = 15; cycle_score = 20; walk_score = 30
+    elif utci_personalized >= 32:
+        run_score = 40; cycle_score = 45; walk_score = 60
+    elif utci_personalized >= 26:
+        run_score = 70; cycle_score = 75; walk_score = 80
+    elif utci_personalized < 9 and utci_personalized >= 0:
+        run_score = 85; cycle_score = 80; walk_score = 75
+    elif utci_personalized < 0 and utci_personalized >= -13:
+        run_score = 60; cycle_score = 50; walk_score = 55
+    elif utci_personalized < -13:
+        run_score = 20; cycle_score = 15; walk_score = 25
+
+    # 2) 자외선 지수 (UV Index) 감점
+    uv_penalty = 0
+    if uv_val >= 11:
+        uv_penalty = 45
+    elif uv_val >= 8:
+        uv_penalty = 30
+    elif uv_val >= 6:
+        uv_penalty = 15
+    elif uv_val >= 3:
+        uv_penalty = 5
+    run_score = max(10, run_score - uv_penalty)
+    cycle_score = max(10, cycle_score - uv_penalty)
+    walk_score = max(10, walk_score - uv_penalty)
+
+    # 3) 강수 확률 (Precipitation Probability) 감점
+    if precip_prob >= 81:
+        run_score = max(10, run_score - 70)
+        cycle_score = max(10, cycle_score - 85)
+        walk_score = max(10, walk_score - 70)
+    elif precip_prob >= 51:
+        run_score = max(10, run_score - 40)
+        cycle_score = max(10, cycle_score - 60)
+        walk_score = max(10, walk_score - 40)
+    elif precip_prob >= 21:
+        run_score = max(10, run_score - 15)
+        cycle_score = max(10, cycle_score - 30)
+        walk_score = max(10, walk_score - 15)
+
+    # 4) 미세먼지(PM10) 감점
+    if pm10_val >= 151:
+        run_score = max(10, run_score - 50)
+        cycle_score = max(10, cycle_score - 50)
+        walk_score = max(10, walk_score - 35)
+    elif pm10_val >= 81:
+        run_score = max(10, run_score - 25)
+        cycle_score = max(10, cycle_score - 25)
+        walk_score = max(10, walk_score - 15)
+    elif pm10_val >= 31:
+        run_score = max(10, run_score - 5)
+        cycle_score = max(10, cycle_score - 5)
+        walk_score = max(10, walk_score - 5)
+
+    # 5) 초미세먼지(PM2.5) 감점
+    if pm25_val >= 76:
+        run_score = max(10, run_score - 50)
+        cycle_score = max(10, cycle_score - 50)
+        walk_score = max(10, walk_score - 40)
+    elif pm25_val >= 36:
+        run_score = max(10, run_score - 35)
+        cycle_score = max(10, cycle_score - 35)
+        walk_score = max(10, walk_score - 20)
+    elif pm25_val >= 16:
+        run_score = max(10, run_score - 5)
+        cycle_score = max(10, cycle_score - 5)
+        walk_score = max(10, walk_score - 5)
+
+    # 등급 매핑 헬퍼 함수
+    def get_suitability_level(score: int):
+        if score >= 90:
+            return {"label": "아주 좋음" if lang == "ko" else "Excellent", "color": "text-emerald-600 bg-emerald-50 border-emerald-100", "barColor": "bg-emerald-500"}
+        elif score >= 75:
+            return {"label": "좋음" if lang == "ko" else "Good", "color": "text-blue-600 bg-blue-50 border-blue-100", "barColor": "bg-blue-500"}
+        elif score >= 50:
+            return {"label": "보통" if lang == "ko" else "Moderate", "color": "text-amber-600 bg-amber-50 border-amber-100", "barColor": "bg-amber-500"}
+        elif score >= 30:
+            return {"label": "주의" if lang == "ko" else "Caution", "color": "text-orange-600 bg-orange-50 border-orange-100", "barColor": "bg-orange-500"}
+        else:
+            return {"label": "위험" if lang == "ko" else "Avoid", "color": "text-rose-600 bg-rose-50 border-rose-100", "barColor": "bg-rose-500"}
+
+    suitability_data = [
+        {"name": "🏃 러닝" if lang == "ko" else "Running", "score": run_score, **get_suitability_level(run_score)},
+        {"name": "🚴 라이딩" if lang == "ko" else "Cycling", "score": cycle_score, **get_suitability_level(cycle_score)},
+        {"name": "🚶 산책" if lang == "ko" else "Walking", "score": walk_score, **get_suitability_level(walk_score)},
+    ]
+
+    # ── 8. 최종 JSON 반환 ─────────────────────────────
     return {
         "mapped_location": {
             "sido": mapped_location["sido"],
@@ -608,6 +709,11 @@ async def get_recommendation(payload: RecommendationRequest):
             "temperature": tdb,
             "humidity": rh,
             "wind_speed": v_raw,
+            "apparent_temperature": apparent_temp,
+            "uv_index": uv_val,
+            "precipitation_probability": precip_prob,
+            "pm10": pm10_val,
+            "pm2_5": pm25_val,
             "tmrt": tmrt,
             "shortwave_radiation": ghi,
             "source": forecast_wrapper["source"]
@@ -630,7 +736,8 @@ async def get_recommendation(payload: RecommendationRequest):
             "nudge_warning": nudge_warning,
             "nudge_message": nudge_message,
             "diff_temp": diff_temp
-        }
+        },
+        "suitability": suitability_data
     }
 
 # ─────────────────────────────────────────────

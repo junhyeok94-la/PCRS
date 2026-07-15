@@ -13,7 +13,7 @@ async def fetch_weather_forecast_from_api(lat: float, lon: float) -> Optional[Di
     params = {
         "latitude": str(lat),
         "longitude": str(lon),
-        "hourly": "temperature_2m,relativehumidity_2m,windspeed_10m,shortwave_radiation",
+        "hourly": "temperature_2m,relativehumidity_2m,windspeed_10m,shortwave_radiation,apparent_temperature,uv_index,precipitation_probability",
         "wind_speed_unit": "ms",
         "timezone": "Asia/Seoul",
         "forecast_days": "7"  # 1차 스펙에 맞춰 7일치 기상 예보 수집
@@ -37,6 +37,39 @@ async def fetch_weather_forecast_from_api(lat: float, lon: float) -> Optional[Di
             
     except Exception as e:
         print(f"❌ Open-Meteo Fetch Exception: {e}")
+        return None
+
+async def fetch_air_quality_from_api(lat: float, lon: float) -> Optional[Dict[str, Any]]:
+    """
+    Open-Meteo Air Quality API를 호출하여 특정 위경도의 24시간 시간별 대기질(PM10, PM2.5) 데이터를 직접 가져옵니다.
+    """
+    url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    params = {
+        "latitude": str(lat),
+        "longitude": str(lon),
+        "hourly": "pm10,pm2_5",
+        "timezone": "Asia/Seoul",
+        "forecast_days": "7"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            print(f"📡 Open-Meteo Air Quality Fetch: lat={lat}, lon={lon} (7 Days)...")
+            response = await client.get(url, params=params)
+            
+            if response.status_code != 200:
+                print(f"❌ Open-Meteo Air Quality API Error: HTTP {response.status_code}")
+                return None
+                
+            res_json = response.json()
+            if "hourly" not in res_json:
+                print("❌ Open-Meteo Air Quality Response missing 'hourly' field.")
+                return None
+                
+            return res_json["hourly"]
+            
+    except Exception as e:
+        print(f"❌ Open-Meteo Air Quality Fetch Exception: {e}")
         return None
 
 async def get_weather_forecast_data(location_id: int, lat: float, lon: float) -> Dict[str, Any]:
@@ -75,6 +108,17 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
     live_data = await fetch_weather_forecast_from_api(lat, lon)
     
     if live_data:
+        # 대기질 데이터도 병합해서 가져오기
+        air_data = await fetch_air_quality_from_api(lat, lon)
+        if air_data:
+            length = len(live_data.get("time", []))
+            live_data["pm10"] = air_data.get("pm10", [0.0] * length)
+            live_data["pm2_5"] = air_data.get("pm2_5", [0.0] * length)
+        else:
+            length = len(live_data.get("time", []))
+            live_data["pm10"] = [35.0] * length  # fallback default
+            live_data["pm2_5"] = [15.0] * length  # fallback default
+
         try:
             # DB 캐시 갱신
             upsert_weather_forecast_cache(
@@ -106,7 +150,12 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
         "temperature_2m": [25.0 + 5.0 * (1.0 - (i % 24 - 14)**2 / 100.0) for i in range(hours_count)], # 낮 기온 높고 밤 낮음
         "relativehumidity_2m": [70.0 - 15.0 * (1.0 - (i % 24 - 14)**2 / 100.0) for i in range(hours_count)],
         "windspeed_10m": [1.5 + 0.5 * (i % 3) for i in range(hours_count)],
-        "shortwave_radiation": [max(0.0, 800.0 * (1.0 - (i % 24 - 12)**2 / 36.0)) for i in range(hours_count)] # 해 뜰때만 일사량 발생
+        "shortwave_radiation": [max(0.0, 800.0 * (1.0 - (i % 24 - 12)**2 / 36.0)) for i in range(hours_count)], # 해 뜰때만 일사량 발생
+        "apparent_temperature": [25.0 + 5.0 * (1.0 - (i % 24 - 14)**2 / 100.0) for i in range(hours_count)],
+        "uv_index": [max(0.0, 8.0 * (1.0 - (i % 24 - 12)**2 / 36.0)) for i in range(hours_count)],
+        "precipitation_probability": [10 * (i % 5) for i in range(hours_count)],
+        "pm10": [35.0 + 10.0 * (i % 3) for i in range(hours_count)],
+        "pm2_5": [15.0 + 5.0 * (i % 3) for i in range(hours_count)]
     }
     return {
         "hourly_data": dummy_hourly,

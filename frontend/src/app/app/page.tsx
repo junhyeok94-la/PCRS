@@ -102,6 +102,11 @@ interface RecommendationData {
     temperature: number;
     humidity: number;
     wind_speed: number;
+    apparent_temperature?: number;
+    uv_index?: number;
+    precipitation_probability?: number;
+    pm10?: number;
+    pm2_5?: number;
     tmrt?: number;
     source: string;
   };
@@ -116,6 +121,7 @@ interface RecommendationData {
     nudge_message: string;
     diff_temp: number;
   };
+  suitability?: any[];
 }
 
 interface RegionMap {
@@ -330,42 +336,7 @@ export default function Dashboard() {
     return alerts;
   };
 
-  // UTCI 기반 야외 활동별 적합도 산출 헬퍼
-  const getActivitySuitability = (utciVal: number) => {
-    // 5단계 등급 정의: 아주 좋음(Excellent), 좋음(Good), 보통(Moderate), 주의(Caution), 위험(Avoid)
-    const getLevel = (score: number) => {
-      if (score >= 90) return { label: "아주 좋음", color: "text-emerald-600 bg-emerald-50 border-emerald-100", barColor: "bg-emerald-500" };
-      if (score >= 75) return { label: "좋음", color: "text-blue-600 bg-blue-50 border-blue-100", barColor: "bg-blue-500" };
-      if (score >= 50) return { label: "보통", color: "text-amber-600 bg-amber-50 border-amber-100", barColor: "bg-amber-500" };
-      if (score >= 30) return { label: "주의", color: "text-orange-600 bg-orange-50 border-orange-100", barColor: "bg-orange-500" };
-      return { label: "위험", color: "text-rose-600 bg-rose-50 border-rose-100", barColor: "bg-rose-500" };
-    };
 
-    let runScore = 95;
-    let cycleScore = 95;
-    let walkScore = 95;
-
-    // UTCI 스트레스 지수에 따른 감점 설계
-    if (utciVal >= 38) { // 극심한 열 스트레스
-      runScore = 15; cycleScore = 20; walkScore = 30;
-    } else if (utciVal >= 32) { // 강한 열 스트레스
-      runScore = 40; cycleScore = 45; walkScore = 60;
-    } else if (utciVal >= 26) { // 중등도 열 스트레스
-      runScore = 70; cycleScore = 75; walkScore = 80;
-    } else if (utciVal < 9 && utciVal >= 0) { // 가벼운 추위 스트레스
-      runScore = 85; cycleScore = 80; walkScore = 75;
-    } else if (utciVal < 0 && utciVal >= -13) { // 중등도 추위 스트레스
-      runScore = 60; cycleScore = 50; walkScore = 55;
-    } else if (utciVal < -13) { // 강한 추위 스트레스
-      runScore = 20; cycleScore = 15; walkScore = 25;
-    }
-
-    return [
-      { name: "🏃 러닝", score: runScore, ...getLevel(runScore) },
-      { name: "🚴 라이딩", score: cycleScore, ...getLevel(cycleScore) },
-      { name: "🚶 산책", score: walkScore, ...getLevel(walkScore) }
-    ];
-  };
 
   // 0. 사용자 세션 초기화 (Guest & Auth 결합)
   useEffect(() => {
@@ -1050,21 +1021,55 @@ export default function Dashboard() {
 
           {/* 실시간 날씨 데이터 요약 */}
           {result && result.weather && (
-            <div className="flex items-center gap-2 mb-4 bg-white/40 border border-white/50 px-3 py-1 rounded-full shadow-sm text-[10px] font-bold text-slate-600">
-              <span className="flex items-center gap-0.5 text-red-500">
-                <Thermometer className="w-3 h-3" />
-                {result.weather.temperature.toFixed(1)}°C
-              </span>
-              <span className="text-slate-300">|</span>
-              <span className="flex items-center gap-0.5 text-blue-500">
-                <Droplet className="w-3 h-3" />
-                {result.weather.humidity}%
-              </span>
-              <span className="text-slate-300">|</span>
-              <span className="flex items-center gap-0.5 text-teal-600">
-                <Wind className="w-3 h-3" />
-                {result.weather.wind_speed.toFixed(1)}m/s
-              </span>
+            <div className="flex flex-col items-center gap-1.5 mb-4">
+              <div className="flex items-center gap-2 bg-white/65 border border-white/80 px-3 py-1.5 rounded-full shadow-[0_8px_18px_rgba(46,117,177,0.10)] text-[10px] font-bold text-slate-600">
+                <span className="flex items-center gap-0.5 text-red-500">
+                  <Thermometer className="w-3 h-3" />
+                  {result.weather.temperature.toFixed(1)}°C
+                </span>
+                <span className="text-slate-300">|</span>
+                <span className="flex items-center gap-0.5 text-blue-500">
+                  <Droplet className="w-3 h-3" />
+                  {result.weather.humidity}%
+                </span>
+                <span className="text-slate-300">|</span>
+                <span className="flex items-center gap-0.5 text-teal-600">
+                  <Wind className="w-3 h-3" />
+                  {result.weather.wind_speed.toFixed(1)}m/s
+                </span>
+                {result.weather.apparent_temperature !== undefined && (
+                  <>
+                    <span className="text-slate-300">|</span>
+                    <span className="flex items-center gap-0.5 text-orange-500" title="공식 체감 온도">
+                      체감 {result.weather.apparent_temperature?.toFixed(1)}°C
+                    </span>
+                  </>
+                )}
+              </div>
+              
+              <div className="flex items-center gap-2 bg-white/50 border border-white/60 px-3 py-1 rounded-full text-[9px] font-bold text-slate-500 shadow-sm">
+                {result.weather.uv_index !== undefined && (
+                  <span className="flex items-center gap-0.5 text-amber-600">
+                    ☀️ 자외선 {result.weather.uv_index?.toFixed(1)}
+                  </span>
+                )}
+                {result.weather.precipitation_probability !== undefined && (
+                  <>
+                    <span className="text-slate-300">|</span>
+                    <span className="flex items-center gap-0.5 text-blue-400">
+                      💧 강수 {result.weather.precipitation_probability}%
+                    </span>
+                  </>
+                )}
+                {result.weather.pm10 !== undefined && result.weather.pm2_5 !== undefined && (
+                  <>
+                    <span className="text-slate-300">|</span>
+                    <span className="flex items-center gap-0.5 text-indigo-500" title={`초미세먼지(PM2.5): ${result.weather.pm2_5?.toFixed(1)} ㎍/㎥`}>
+                      😷 미세 {result.weather.pm10?.toFixed(0)} / 초미세 {result.weather.pm2_5?.toFixed(0)}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
           )}
 
@@ -1436,7 +1441,7 @@ export default function Dashboard() {
               </span>
               
               <div className="grid grid-cols-3 gap-2.5 mt-1.5">
-                {getActivitySuitability(result.utci_personalized ?? result.utci ?? 0).map((act, idx) => (
+                {(result.suitability || []).map((act: any, idx: number) => (
                   <div 
                     key={idx} 
                     className="p-3 rounded-2xl border bg-white/60 hover:bg-white hover:border-emerald-200 hover:shadow-md hover:shadow-emerald-50/50 transition-all duration-200 flex flex-col items-center text-center gap-1"
