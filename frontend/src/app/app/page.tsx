@@ -28,10 +28,14 @@ import {
   X,
 } from "lucide-react";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://bdkvcrvmzeghburhcdut.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJka3ZjcnZtemVnaGJ1cmhjZHV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3MTI1OTEsImV4cCI6MjA5ODI4ODU5MX0.PVvfBdIbLmhOwhXN5vJc9kiNxPjkRTgwnO6JjgzU5P8";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8002";
 const CONSENT_POLICY_VERSION = "2026-07-15";
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error("Supabase public configuration is missing.");
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 

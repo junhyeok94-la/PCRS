@@ -3,6 +3,9 @@ import os
 import math
 import datetime
 import json
+import threading
+import time
+from collections import defaultdict, deque
 
 # Windows 콘솔 한글 및 이모지 출력 시 cp949 인코딩 오류 방지
 if sys.platform == 'win32':
@@ -12,8 +15,9 @@ if sys.platform == 'win32':
     except AttributeError:
         pass
 from typing import Literal, Optional, Dict, Any, List
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
@@ -51,7 +55,7 @@ from db_client import (
     seed_all_locations_into_db
 )
 from auth import AuthenticatedUser, require_authenticated_user
-from weather_client import get_weather_forecast_data, fetch_weather_forecast_from_api
+from weather_client import add_generic_utci, get_weather_forecast_data, fetch_weather_forecast_from_api
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
 # ─────────────────────────────────────────────
@@ -138,6 +142,7 @@ def run_weather_collect_batch():
             
         # 계산 결과 리스트를 JSON 구조에 보존
         hourly_raw["utci"] = utci_list
+        hourly_raw = add_generic_utci(hourly_raw)
         
         # 3. DB 캐시에 Upsert
         upsert_weather_forecast_cache(
@@ -204,7 +209,12 @@ async def lifespan(app: FastAPI):
     # 스타트업 시 배치 스케줄러 등록
     scheduler = BackgroundScheduler()
     # 3시간마다 백그라운드 크론 실행 설정
-    scheduler.add_job(run_weather_collect_batch, 'interval', hours=3, id='weather_collect_job')
+    scheduler.add_job(
+        run_weather_collect_batch,
+        'interval',
+        hours=int(os.getenv("WEATHER_BATCH_INTERVAL_HOURS", "3")),
+        id='weather_collect_job',
+    )
     scheduler.add_job(run_account_deletion_batch, 'interval', days=1, id='account_deletion_job')
     scheduler.start()
     print("🚀 Background scheduler started. Weather collect batch registered (every 3 hours).")
@@ -243,9 +253,52 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+# This process-local limit protects the public recommendation endpoint from
+# expensive weather-provider abuse. Apply an equivalent edge/proxy limit in
+# production when the API runs with multiple workers.
+PUBLIC_RECOMMEND_RATE_LIMIT = int(os.getenv("PUBLIC_RECOMMEND_RATE_LIMIT", "20"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+_recommendation_requests: dict[str, deque[float]] = defaultdict(deque)
+_recommendation_rate_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    if os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true":
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def add_security_headers_and_limit_public_recommendations(request: Request, call_next):
+    if request.method == "POST" and request.url.path == "/api/v1/recommend":
+        now = time.monotonic()
+        client_ip = _client_ip(request)
+        with _recommendation_rate_lock:
+            recent = _recommendation_requests[client_ip]
+            while recent and now - recent[0] >= RATE_LIMIT_WINDOW_SECONDS:
+                recent.popleft()
+            if len(recent) >= PUBLIC_RECOMMEND_RATE_LIMIT:
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={"detail": "Too many recommendation requests. Please try again shortly."},
+                    headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
+                )
+            recent.append(now)
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(self)"
+    if request.url.path.startswith("/api/v1/me/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 # ─────────────────────────────────────────────
 # 6. Pydantic 모델

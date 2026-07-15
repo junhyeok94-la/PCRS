@@ -39,6 +39,14 @@ def get_admin_client() -> Optional[Client]:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 
+def get_weather_cache_client() -> Client:
+    """Return the server-only client used for shared forecast-cache persistence."""
+    client = get_admin_client()
+    if client is None:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is required for weather cache access.")
+    return client
+
+
 def get_phase1_profile(access_token: str, user_id: str) -> Optional[Dict[str, Any]]:
     """Read the authenticated user's Phase 1 personalization profile."""
     try:
@@ -674,7 +682,7 @@ def _get_all_location_coordinates_raw() -> List[Dict[str, Any]]:
 
 def get_weather_forecast_cache(location_id: int, date_str: str) -> Optional[Dict[str, Any]]:
     try:
-        response = supabase.table("weather_forecast_cache") \
+        response = get_weather_cache_client().table("weather_forecast_cache") \
             .select("*") \
             .eq("location_id", location_id) \
             .eq("forecast_date", date_str) \
@@ -682,31 +690,8 @@ def get_weather_forecast_cache(location_id: int, date_str: str) -> Optional[Dict
             
         if response.data and len(response.data) > 0:
             return response.data[0]
-    except Exception:
-        try:
-            response = supabase.table("weather_cache") \
-                .select("*") \
-                .eq("region_id", location_id) \
-                .execute()
-            if response.data and len(response.data) > 0:
-                cache = response.data[0]
-                t = cache.get("temperature", 25.0)
-                h = cache.get("humidity", 60.0)
-                w = cache.get("wind_speed", 1.5)
-                mock_hourly = {
-                    "temperature_2m": [t] * 24,
-                    "relativehumidity_2m": [h] * 24,
-                    "windspeed_10m": [w] * 24,
-                    "shortwave_radiation": [0.0] * 24
-                }
-                return {
-                    "location_id": location_id,
-                    "forecast_date": date_str,
-                    "hourly_data": mock_hourly,
-                    "updated_at": cache.get("created_at")
-                }
-        except Exception:
-            pass
+    except Exception as exc:
+        print(f"ERROR [weather_forecast_cache read]: {exc}")
     return None
 
 def upsert_weather_forecast_cache(location_id: int, date_str: str, hourly_data: Dict[str, Any]) -> Optional[Any]:
@@ -716,23 +701,13 @@ def upsert_weather_forecast_cache(location_id: int, date_str: str, hourly_data: 
             "forecast_date": date_str,
             "hourly_data": hourly_data
         }
-        response = supabase.table("weather_forecast_cache").upsert(data).execute()
+        response = get_weather_cache_client().table("weather_forecast_cache") \
+            .upsert(data, on_conflict="location_id") \
+            .execute()
         return response.data
-    except Exception:
-        try:
-            t = hourly_data.get("temperature_2m", [25.0])[0]
-            h = hourly_data.get("relativehumidity_2m", [60.0])[0]
-            w = hourly_data.get("windspeed_10m", [1.5])[0]
-            data_old = {
-                "region_id": location_id,
-                "temperature": t,
-                "humidity": h,
-                "wind_speed": w
-            }
-            response = supabase.table("weather_cache").upsert(data_old).execute()
-            return response.data
-        except Exception:
-            return None
+    except Exception as exc:
+        print(f"ERROR [weather_forecast_cache upsert]: {exc}")
+        return None
 
 def insert_user_feedback(user_id: str, feedback_type: str, utci: float, temp: float, clo: float) -> Optional[Any]:
     try:

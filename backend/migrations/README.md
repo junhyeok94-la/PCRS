@@ -30,3 +30,7 @@ Run `005_wardrobe_preferences.sql` after Phase 3. It adds favourite, season, and
 ## Wardrobe details
 
 Run `007_wardrobe_item_details.sql` after the wardrobe migrations. It adds subcategory, material, and personal notes used by the editable wardrobe catalog and material-based warmth guidance.
+
+## Shared weather cache
+
+Run `008_weather_forecast_cache_server_only.sql`. The backend writes this shared cache through `SUPABASE_SERVICE_ROLE_KEY`; browser roles cannot read or change it. Set `FORECAST_CACHE_TTL_SECONDS` and `WEATHER_BATCH_INTERVAL_HOURS` to the same interval (the default is 3 hours) so normal requests reuse the scheduled forecast refresh.

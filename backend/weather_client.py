@@ -1,9 +1,40 @@
-import httpx
 import datetime
+import os
+import httpx
 from typing import Dict, Any, Optional
 from db_client import get_weather_forecast_cache, upsert_weather_forecast_cache
+from utci_pure import calculate_utci_pure as calc_utci_raw
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
+FORECAST_CACHE_TTL_SECONDS = int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800"))
+
+
+def add_generic_utci(hourly_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Add generic outdoor UTCI values for every hourly forecast entry."""
+    temperatures = hourly_data.get("temperature_2m", [])
+    humidities = hourly_data.get("relativehumidity_2m", [])
+    wind_speeds = hourly_data.get("windspeed_10m", [])
+    radiations = hourly_data.get("shortwave_radiation", [])
+    utci_values = []
+
+    for index, temperature in enumerate(temperatures):
+        humidity = humidities[index] if index < len(humidities) else 60.0
+        wind_speed = wind_speeds[index] if index < len(wind_speeds) else 1.5
+        radiation = radiations[index] if index < len(radiations) else 0.0
+        mean_radiant_temperature = round(temperature + 0.0014 * radiation, 1)
+        try:
+            value = calc_utci_raw(
+                tdb=temperature,
+                tr=mean_radiant_temperature,
+                v=wind_speed,
+                rh=humidity,
+            )
+        except Exception:
+            value = temperature + (mean_radiant_temperature - temperature) * 0.35 - max(0.0, wind_speed - 0.5) * 2.0
+        utci_values.append(round(value, 2))
+
+    hourly_data["utci"] = utci_values
+    return hourly_data
 
 async def fetch_weather_forecast_from_api(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
@@ -94,7 +125,7 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
             created_at = datetime.datetime.fromisoformat(created_str)
             utc_now = datetime.datetime.now(created_at.tzinfo)
             # 1시간 이내이면 Cache Hit
-            if utc_now - created_at < datetime.timedelta(hours=1):
+            if utc_now - created_at < datetime.timedelta(seconds=FORECAST_CACHE_TTL_SECONDS):
                 print("🚀 Cache Hit: Using forecast data from Supabase weather_forecast_cache.")
                 return {
                     "hourly_data": cache["hourly_data"],
@@ -119,13 +150,17 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
             live_data["pm10"] = [35.0] * length  # fallback default
             live_data["pm2_5"] = [15.0] * length  # fallback default
 
+        live_data = add_generic_utci(live_data)
+
         try:
             # DB 캐시 갱신
-            upsert_weather_forecast_cache(
+            persisted = upsert_weather_forecast_cache(
                 location_id=location_id,
                 date_str=today_str,
                 hourly_data=live_data
             )
+            if persisted is None:
+                print("ERROR [weather_forecast_cache]: forecast was fetched but was not persisted.")
         except Exception as e:
             print(f"⚠️ Failed to cache forecast data: {e}")
             

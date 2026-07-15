@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import main  # noqa: E402
 from auth import AuthenticatedUser, require_authenticated_user  # noqa: E402
+from weather_client import add_generic_utci  # noqa: E402
 
 
 RECENT_USER = AuthenticatedUser(
@@ -20,6 +21,21 @@ RECENT_USER = AuthenticatedUser(
     access_token="test-token",
     last_sign_in_at=datetime.now(timezone.utc).isoformat(),
 )
+
+
+class ForecastCacheUnitTests(unittest.TestCase):
+    def test_generic_utci_is_stored_for_every_forecast_hour(self):
+        forecast = {
+            "temperature_2m": [20.0, 21.0],
+            "relativehumidity_2m": [50.0, 55.0],
+            "windspeed_10m": [1.0, 1.2],
+            "shortwave_radiation": [100.0, 200.0],
+        }
+
+        enriched = add_generic_utci(forecast)
+
+        self.assertEqual(len(enriched["utci"]), 2)
+        self.assertTrue(all(isinstance(value, float) for value in enriched["utci"]))
 
 
 class PhaseContractTests(unittest.TestCase):
@@ -33,6 +49,26 @@ class PhaseContractTests(unittest.TestCase):
     def test_profile_requires_realistic_birth_year(self):
         response = self.client.patch("/api/v1/me/profile", json={"birth_year": 1900})
         self.assertEqual(response.status_code, 422)
+
+    def test_api_security_headers_are_present(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(response.headers["x-frame-options"], "DENY")
+        self.assertEqual(response.headers["referrer-policy"], "strict-origin-when-cross-origin")
+
+    def test_public_recommendation_is_rate_limited(self):
+        original_limit = main.PUBLIC_RECOMMEND_RATE_LIMIT
+        main.PUBLIC_RECOMMEND_RATE_LIMIT = 1
+        main._recommendation_requests.clear()
+        try:
+            first = self.client.post("/api/v1/recommend", json={})
+            second = self.client.post("/api/v1/recommend", json={})
+            self.assertEqual(first.status_code, 422)
+            self.assertEqual(second.status_code, 429)
+            self.assertIn("retry-after", second.headers)
+        finally:
+            main.PUBLIC_RECOMMEND_RATE_LIMIT = original_limit
+            main._recommendation_requests.clear()
 
     @patch("main.get_phase1_profile", return_value={"user_id": RECENT_USER.user_id, "height_cm": 171})
     def test_profile_reads_only_authenticated_user(self, _mock_profile):
