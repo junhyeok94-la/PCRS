@@ -42,7 +42,7 @@ class PhaseContractTests(unittest.TestCase):
 
     @patch("main.create_wardrobe_item", return_value={"id": "item-1", "name": "바람막이", "category": "outerwear"})
     def test_wardrobe_create_contract(self, _mock_create):
-        response = self.client.post("/api/v1/me/wardrobe", json={"name": "바람막이", "category": "outerwear", "warmth_level": 1})
+        response = self.client.post("/api/v1/me/wardrobe", json={"name": "바람막이", "category": "outerwear", "subcategory": "바람막이", "material": "폴리에스터", "notes": "얇은 안감", "warmth_level": 1})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["item"]["id"], "item-1")
 

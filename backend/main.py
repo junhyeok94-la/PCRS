@@ -311,6 +311,9 @@ class ConsentUpdateRequest(BaseModel):
 class WardrobeItemCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     category: Literal["top", "bottom", "outerwear", "shoes", "accessory", "other"]
+    subcategory: Optional[str] = Field(default=None, max_length=40)
+    material: Optional[str] = Field(default=None, max_length=40)
+    notes: Optional[str] = Field(default=None, max_length=240)
     warmth_level: int = Field(default=0, ge=-2, le=2)
     water_resistant: bool = False
     is_favorite: bool = False
@@ -321,6 +324,9 @@ class WardrobeItemCreateRequest(BaseModel):
 class WardrobeItemUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     category: Optional[Literal["top", "bottom", "outerwear", "shoes", "accessory", "other"]] = None
+    subcategory: Optional[str] = Field(default=None, max_length=40)
+    material: Optional[str] = Field(default=None, max_length=40)
+    notes: Optional[str] = Field(default=None, max_length=240)
     warmth_level: Optional[int] = Field(default=None, ge=-2, le=2)
     water_resistant: Optional[bool] = None
     is_favorite: Optional[bool] = None

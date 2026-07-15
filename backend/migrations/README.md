@@ -26,3 +26,7 @@ Run `004_saved_locations.sql` after Phase 1. It adds user-owned favorite locatio
 ## Wardrobe availability
 
 Run `005_wardrobe_preferences.sql` after Phase 3. It adds favourite, season, and laundry-state fields so unavailable clothing is excluded from recommendations.
+
+## Wardrobe details
+
+Run `007_wardrobe_item_details.sql` after the wardrobe migrations. It adds subcategory, material, and personal notes used by the editable wardrobe catalog and material-based warmth guidance.
