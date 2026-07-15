@@ -216,6 +216,7 @@ export default function Dashboard() {
   const [environment, setEnvironment] = useState<"indoor" | "outdoor">(() => getUrlParam("env", "outdoor") as "indoor" | "outdoor");
   const [activityLevel, setActivityLevel] = useState<string>(() => getUrlParam("act", "walking")); // [신설] 활동 수준
   const [showQuickProfile, setShowQuickProfile] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"home" | "hourly" | "clothing" | "settings">("home");
 
   // Body fat guide state
   const [showBodyFatGuide, setShowBodyFatGuide] = useState<boolean>(false);
@@ -1018,8 +1019,13 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* Hero Section (Avatar & Live Weather Display) */}
-        <section className="flex flex-col items-center px-6 pt-5 pb-2 shrink-0 relative">
+        {/* Tab Contents Area (Scrollable) */}
+        <div className="flex-1 overflow-y-auto pb-20 relative">
+
+          {/* 1. 홈 탭 (Home View) */}
+          {activeTab === "home" && (
+            <div className="animate-in fade-in duration-200 flex flex-col items-center">
+              <section className="flex flex-col items-center w-full px-6 pt-5 pb-2 shrink-0 relative">
           
           {/* 위치 정보 & GPS 자동 매핑 (모달 연동 및 마우스 커서/디자인 개선) */}
           <div className="flex items-center gap-2 mb-2">
@@ -1168,17 +1174,26 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 퀵 세팅 기어 버튼 (우측 상단 플로팅) */}
-          <button
-            onClick={() => setShowQuickProfile(!showQuickProfile)}
-            className={`absolute right-6 top-6 p-2 rounded-full border transition-all ${
-              showQuickProfile ? "bg-slate-900 border-slate-950 text-white scale-110" : "bg-white/90 border-slate-200 text-slate-600 hover:text-slate-800 shadow-sm"
-            }`}
-            title="개인 체형 및 조건 설정 토글"
-          >
-            {showQuickProfile ? <X className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
-          </button>
-        </section>
+                {/* 설정 숏컷 버튼 */}
+                <button
+                  onClick={() => setActiveTab("settings")}
+                  className="absolute right-6 top-6 p-2 rounded-full border bg-white/90 border-slate-200 text-slate-600 hover:text-slate-800 shadow-sm transition-all"
+                  title="개인 설정 편집 이동"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+              </section>
+
+              {/* 홈 화면 하단 안내 문구 */}
+              {result && (
+                <div className="px-6 py-4 mt-4 w-full">
+                  <p className="text-[11px] text-slate-500 leading-relaxed bg-slate-50 border border-slate-100 p-4 rounded-2xl font-medium shadow-sm">
+                    {getSummarySentence()}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
         {/* Bottom Sheet Details Panel */}
         <section className="bg-white/95 rounded-t-[36px] shadow-[0_-12px_30px_rgba(0,0,0,0.06)] px-5 py-6 flex-1 flex flex-col gap-6 mt-2 border-t border-slate-100 relative pb-16">
@@ -1516,129 +1531,59 @@ export default function Dashboard() {
                   <Line 
                     type="monotone" 
                     dataKey="실제 기온" 
-                    stroke="#94a3b8" 
-                    strokeWidth={1.5}
-                    strokeDasharray="4 4"
-                    dot={{ r: 2 }}
-                    activeDot={{ r: 4 }}
-                  />
-                  {/* 체감 온도 메인 선 */}
-                  <Line 
-                    type="monotone" 
-                    dataKey="체감 온도" 
-                    stroke="#2563eb" 
-                    strokeWidth={3}
-                    dot={(props: any) => {
-                      const { cx, cy, payload } = props;
-                      const isSelected = payload.time === selectedTime;
-                      return (
-                        <circle 
-                          key={payload.time}
-                          cx={cx} 
-                          cy={cy} 
-                          r={isSelected ? 6 : 4} 
-                          fill={isSelected ? "#2563eb" : "#ffffff"} 
-                          stroke="#2563eb" 
-                          strokeWidth={isSelected ? 3 : 2}
-                          style={{ cursor: "pointer" }}
-                        />
-                      );
-                    }}
-                    activeDot={{ r: 7 }}
+                    stroke="#94a3b8"
+                    strokeWidth={1}
+                    strokeDasharray="3 3"
+                    dot={false}
                   />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-
-            {/* 차트 하단 미니 옷 정보 및 쾌적도 요약 */}
-            <div className="grid grid-cols-5 gap-1.5 mt-2">
-              {times.map((t) => {
-                const res = hourlyResults[t];
-                const isSelected = t === selectedTime;
-                return (
-                  <div 
-                    key={t}
-                    onClick={() => setSelectedTime(t)}
-                    className={`p-1.5 rounded-xl border flex flex-col items-center justify-between text-center transition-all cursor-pointer ${
-                      isSelected 
-                        ? "bg-blue-600/10 border-blue-500 shadow-sm" 
-                        : "bg-slate-50/50 border-slate-100 hover:bg-slate-100/50"
-                    }`}
-                  >
-                    <span className="text-[9px] font-extrabold text-slate-500">{t}</span>
-                    <span className="text-[10px] font-black text-slate-800 mt-1">
-                      {res ? `${Math.round(res.utci_personalized ?? res.utci ?? 0)}°` : "-"}
-                    </span>
-                    <span className="text-[8px] font-bold text-slate-400 mt-0.5 max-w-full truncate">
-                      {res?.recommendations?.clothing?.[0] || "대기"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
           </div>
-
-          {/* 4. 유사 스펙 유저 추천 */}
-          {result && (
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <User className="w-4 h-4 text-blue-500" />
-                {t("similar.title")}
-              </span>
-              
-              {(() => {
-                const sim = getSimilarUserRecommendations();
-                if (!sim) return (
-                  <div className="text-center py-4 bg-slate-50 rounded-2xl border border-slate-200/50 text-[10px] text-slate-400">
-                    {t("similar.empty")}
-                  </div>
-                );
-                
-                const recs = [
-                  { label: sim.clothing.label, desc: sim.clothing.badge, icon: "👕" },
-                  { label: sim.hydration.label, desc: sim.hydration.badge, icon: "💧" },
-                  { label: sim.activity.label, desc: sim.activity.badge, icon: "🏃" }
-                ];
-
-                return (
-                  <div className="grid grid-cols-3 gap-2">
-                    {recs.map((item, idx) => (
-                      <div key={idx} className="p-3 bg-slate-50 border border-slate-200/50 rounded-2xl text-center hover:border-blue-200 transition-colors">
-                        <span className="text-lg">{item.icon}</span>
-                        <div className="text-[10px] font-black text-slate-800 mt-1.5 truncate">{item.label}</div>
-                        <div className="text-[8px] font-bold text-blue-500 mt-1 bg-blue-500/5 py-0.5 rounded-full border border-blue-500/10 truncate">{item.desc}</div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-
-
-
-          {/* 리셋 & 링크 공유 */}
-          <div className="flex justify-between items-center border-t border-slate-100 pt-5 mt-2">
-            <button
-              onClick={copyShareLink}
-              className="flex items-center gap-1 text-[10px] font-extrabold text-blue-600 border border-blue-500/20 bg-blue-500/5 hover:bg-blue-500/10 px-3 py-1.5 rounded-xl transition-all"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-              <span>{t("share.copy") || "공유 링크"}</span>
-            </button>
-
-            <button
-              onClick={handleReset}
-              className="text-[10px] text-slate-400 hover:text-slate-600 flex items-center gap-1.5 py-1.5 px-3 rounded-xl hover:bg-slate-100 border border-slate-200 transition-all"
-            >
-              <RotateCcw className="w-3 h-3" />
-              <span>{t("ai.reset")}</span>
-            </button>
-          </div>
-
         </section>
+
+          {/* 하단 탭 내비게이션 바 컴포넌트 */}
+          <nav className="absolute bottom-0 left-0 right-0 h-16 bg-slate-900 border-t border-slate-950 text-white flex justify-around items-center z-30 px-2 shadow-lg">
+        <button
+          onClick={() => setActiveTab("home")}
+          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
+            activeTab === "home" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Thermometer className="w-5 h-5" />
+          <span className="text-[9px] tracking-tight">{lang === "ko" ? "홈" : "Home"}</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("hourly")}
+          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
+            activeTab === "hourly" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Sliders className="w-5 h-5" />
+          <span className="text-[9px] tracking-tight">{lang === "ko" ? "시간별" : "Hourly"}</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("clothing")}
+          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
+            activeTab === "clothing" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Shirt className="w-5 h-5" />
+          <span className="text-[9px] tracking-tight">{lang === "ko" ? "의류" : "Clothing"}</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("settings")}
+          className={`flex flex-col items-center gap-1 flex-1 py-1.5 transition-all duration-200 ${
+            activeTab === "settings" ? "text-blue-400 scale-105 font-black" : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Settings className="w-5 h-5" />
+          <span className="text-[9px] tracking-tight">{lang === "ko" ? "설정" : "Settings"}</span>
+        </button>
+      </nav>
       </div>
-    </div>
+      </div>
+      </div>
 
       {/* 피드백 토스트 알림 */}
       {feedbackToast && (
@@ -1735,7 +1680,7 @@ export default function Dashboard() {
               </div>
               <button 
                 onClick={() => setShowBodyFatGuide(false)}
-                className="text-slate-400 hover:text-slate-600 font-extrabold text-sm p-1.5 hover:bg-slate-100 rounded-lg transition-colors"
+                className="text-slate-400 hover:text-slate-650 font-extrabold text-sm p-1.5 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 {t("bodyfat.close")}
               </button>

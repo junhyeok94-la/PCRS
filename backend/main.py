@@ -1,6 +1,15 @@
+import sys
 import os
 import math
 import datetime
+
+# Windows 콘솔 한글 및 이모지 출력 시 cp949 인코딩 오류 방지
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +30,8 @@ from db_client import (
     get_user_clo_bias,
     get_user_profile,
     upsert_user_profile,
-    upsert_historical_weather_fact
+    upsert_historical_weather_fact,
+    seed_all_locations_into_db
 )
 from weather_client import get_weather_forecast_data, fetch_weather_forecast_from_api
 from utci_pure import calculate_utci_pure as calc_utci_raw
@@ -165,6 +175,12 @@ def run_weather_collect_batch():
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 스타트업 시 전국 82개 거점 데이터 Supabase DB에 자동 동기화 시딩
+    try:
+        seed_all_locations_into_db()
+    except Exception as se:
+        print(f"⚠️ [Startup] Auto-seeding failed, utilizing local fallback lists: {se}")
+
     # 스타트업 시 배치 스케줄러 등록
     scheduler = BackgroundScheduler()
     # 3시간마다 백그라운드 크론 실행 설정
@@ -622,4 +638,4 @@ async def get_recommendation(payload: RecommendationRequest):
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)

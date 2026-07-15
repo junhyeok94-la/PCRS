@@ -20,17 +20,169 @@ REGIONAL_GPS_FALLBACK = {
     "서초구": (37.4836, 127.0327),
     "송파구": (37.5145, 127.1059),
     "마포구": (37.5638, 126.9084),
-    "종로구": (37.5735, 126.9790),
+    "종로구": (37.5735, 126.979),
     "영등포구": (37.5264, 126.8962),
+    "관악구": (37.4784, 126.9516),
+    "동작구": (37.5124, 126.9392),
+    "용산구": (37.5326, 126.9904),
+    "성동구": (37.5635, 127.0365),
+    "광진구": (37.5385, 127.0824),
+    "동대문구": (37.5744, 127.04),
+    "중랑구": (37.6065, 127.0927),
+    "성북구": (37.5891, 127.0182),
+    "강북구": (37.6396, 127.0257),
+    "도봉구": (37.6688, 127.0471),
+    "노원구": (37.6542, 127.0568),
+    "은평구": (37.6027, 126.9291),
+    "서대문구": (37.5791, 126.9368),
+    "양천구": (37.5169, 126.8665),
+    "강서구": (37.5509, 126.8497),
+    "구로구": (37.4954, 126.8874),
+    "금천구": (37.457, 126.8957),
+    "강동구": (37.5302, 127.1238),
+    "중구": (37.5636, 126.9976),
+    "수원시": (37.2636, 127.0286),
+    "성남시": (37.4449, 127.1389),
+    "고양시": (37.6584, 126.832),
+    "용인시": (37.241, 127.1779),
+    "부천시": (37.4893, 126.7826),
+    "안산시": (37.3219, 126.8308),
+    "안양시": (37.3897, 126.9535),
+    "남양주시": (37.636, 127.2165),
+    "화성시": (37.1995, 126.8315),
+    "평택시": (36.9921, 127.1128),
+    "의정부시": (37.7381, 127.0337),
+    "시흥시": (37.3801, 126.803),
+    "김포시": (37.6152, 126.7156),
+    "광명시": (37.4785, 126.8647),
+    "파주시": (37.76, 126.78),
+    "군포시": (37.3617, 126.9353),
+    "광주시": (37.4294, 127.2551),
+    "이천시": (37.2723, 127.4418),
+    "양주시": (37.7853, 127.0457),
+    "구리시": (37.5943, 127.1296),
+    "안성시": (37.008, 127.2797),
+    "포천시": (37.8949, 127.2067),
+    "의왕시": (37.3449, 126.9683),
+    "하남시": (37.5393, 127.2148),
+    "여주시": (37.2984, 127.6371),
+    "중구": (37.4728, 126.6238),
+    "남동구": (37.4469, 126.7315),
+    "부평구": (37.5071, 126.7219),
+    "서구": (37.5451, 126.676),
+    "연수구": (37.4101, 126.6783),
+    "해운대구": (35.1631, 129.1636),
+    "부산진구": (35.1601, 129.0567),
+    "동래구": (35.2048, 129.0838),
+    "사하구": (35.1044, 128.9675),
+    "금정구": (35.2427, 129.0924),
+    "중구": (35.8694, 128.6062),
+    "수성구": (35.8569, 128.63),
+    "달서구": (35.8277, 128.5348),
+    "동구": (35.1461, 126.9231),
+    "북구": (35.195, 126.909),
+    "서구": (35.152, 126.89),
+    "중구": (36.325, 127.4208),
+    "서구": (36.333, 127.369),
+    "유성구": (36.362, 127.356),
+    "남구": (35.5437, 129.33),
+    "세종시": (36.48, 127.289),
+    "제주시": (33.5006, 126.5312),
+    "서귀포시": (33.2541, 126.5601),
+    "춘천시": (37.8813, 127.7298),
+    "강릉시": (37.7518, 128.8761),
+    "청주시": (36.6372, 127.4897),
+    "천안시": (36.815, 127.1139),
+    "전주시": (35.8242, 127.148),
+    "목포시": (34.8118, 126.3922),
+    "포항시": (36.019, 129.3434),
+    "창원시": (35.228, 128.6811),
+    "김해시": (35.234, 128.881)
 }
 
 SEED_LOCATIONS = [
-    {"id": 1, "sido": "서울특별시", "sigungu": "강남구", "latitude": 37.5172, "longitude": 127.0473, "nx": 61, "ny": 125, "station_id": 108},
-    {"id": 2, "sido": "서울특별시", "sigungu": "서초구", "latitude": 37.4836, "longitude": 127.0327, "nx": 61, "ny": 125, "station_id": 108},
-    {"id": 3, "sido": "서울특별시", "sigungu": "송파구", "latitude": 37.5145, "longitude": 127.1059, "nx": 62, "ny": 126, "station_id": 108},
-    {"id": 4, "sido": "서울특별시", "sigungu": "마포구", "latitude": 37.5638, "longitude": 126.9084, "nx": 59, "ny": 127, "station_id": 108},
-    {"id": 5, "sido": "서울특별시", "sigungu": "종로구", "latitude": 37.5735, "longitude": 126.9790, "nx": 60, "ny": 127, "station_id": 108},
-    {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962, "nx": 58, "ny": 126, "station_id": 108},
+    {"id": 1, "sido": "서울특별시", "sigungu": "강남구", "latitude": 37.5172, "longitude": 127.0473},
+    {"id": 2, "sido": "서울특별시", "sigungu": "서초구", "latitude": 37.4836, "longitude": 127.0327},
+    {"id": 3, "sido": "서울특별시", "sigungu": "송파구", "latitude": 37.5145, "longitude": 127.1059},
+    {"id": 4, "sido": "서울특별시", "sigungu": "마포구", "latitude": 37.5638, "longitude": 126.9084},
+    {"id": 5, "sido": "서울특별시", "sigungu": "종로구", "latitude": 37.5735, "longitude": 126.979},
+    {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962},
+    {"id": 7, "sido": "서울특별시", "sigungu": "관악구", "latitude": 37.4784, "longitude": 126.9516},
+    {"id": 8, "sido": "서울특별시", "sigungu": "동작구", "latitude": 37.5124, "longitude": 126.9392},
+    {"id": 9, "sido": "서울특별시", "sigungu": "용산구", "latitude": 37.5326, "longitude": 126.9904},
+    {"id": 10, "sido": "서울특별시", "sigungu": "성동구", "latitude": 37.5635, "longitude": 127.0365},
+    {"id": 11, "sido": "서울특별시", "sigungu": "광진구", "latitude": 37.5385, "longitude": 127.0824},
+    {"id": 12, "sido": "서울특별시", "sigungu": "동대문구", "latitude": 37.5744, "longitude": 127.04},
+    {"id": 13, "sido": "서울특별시", "sigungu": "중랑구", "latitude": 37.6065, "longitude": 127.0927},
+    {"id": 14, "sido": "서울특별시", "sigungu": "성북구", "latitude": 37.5891, "longitude": 127.0182},
+    {"id": 15, "sido": "서울특별시", "sigungu": "강북구", "latitude": 37.6396, "longitude": 127.0257},
+    {"id": 16, "sido": "서울특별시", "sigungu": "도봉구", "latitude": 37.6688, "longitude": 127.0471},
+    {"id": 17, "sido": "서울특별시", "sigungu": "노원구", "latitude": 37.6542, "longitude": 127.0568},
+    {"id": 18, "sido": "서울특별시", "sigungu": "은평구", "latitude": 37.6027, "longitude": 126.9291},
+    {"id": 19, "sido": "서울특별시", "sigungu": "서대문구", "latitude": 37.5791, "longitude": 126.9368},
+    {"id": 20, "sido": "서울특별시", "sigungu": "양천구", "latitude": 37.5169, "longitude": 126.8665},
+    {"id": 21, "sido": "서울특별시", "sigungu": "강서구", "latitude": 37.5509, "longitude": 126.8497},
+    {"id": 22, "sido": "서울특별시", "sigungu": "구로구", "latitude": 37.4954, "longitude": 126.8874},
+    {"id": 23, "sido": "서울특별시", "sigungu": "금천구", "latitude": 37.457, "longitude": 126.8957},
+    {"id": 24, "sido": "서울특별시", "sigungu": "강동구", "latitude": 37.5302, "longitude": 127.1238},
+    {"id": 25, "sido": "서울특별시", "sigungu": "중구", "latitude": 37.5636, "longitude": 126.9976},
+    {"id": 26, "sido": "경기도", "sigungu": "수원시", "latitude": 37.2636, "longitude": 127.0286},
+    {"id": 27, "sido": "경기도", "sigungu": "성남시", "latitude": 37.4449, "longitude": 127.1389},
+    {"id": 28, "sido": "경기도", "sigungu": "고양시", "latitude": 37.6584, "longitude": 126.832},
+    {"id": 29, "sido": "경기도", "sigungu": "용인시", "latitude": 37.241, "longitude": 127.1779},
+    {"id": 30, "sido": "경기도", "sigungu": "부천시", "latitude": 37.4893, "longitude": 126.7826},
+    {"id": 31, "sido": "경기도", "sigungu": "안산시", "latitude": 37.3219, "longitude": 126.8308},
+    {"id": 32, "sido": "경기도", "sigungu": "안양시", "latitude": 37.3897, "longitude": 126.9535},
+    {"id": 33, "sido": "경기도", "sigungu": "남양주시", "latitude": 37.636, "longitude": 127.2165},
+    {"id": 34, "sido": "경기도", "sigungu": "화성시", "latitude": 37.1995, "longitude": 126.8315},
+    {"id": 35, "sido": "경기도", "sigungu": "평택시", "latitude": 36.9921, "longitude": 127.1128},
+    {"id": 36, "sido": "경기도", "sigungu": "의정부시", "latitude": 37.7381, "longitude": 127.0337},
+    {"id": 37, "sido": "경기도", "sigungu": "시흥시", "latitude": 37.3801, "longitude": 126.803},
+    {"id": 38, "sido": "경기도", "sigungu": "김포시", "latitude": 37.6152, "longitude": 126.7156},
+    {"id": 39, "sido": "경기도", "sigungu": "광명시", "latitude": 37.4785, "longitude": 126.8647},
+    {"id": 40, "sido": "경기도", "sigungu": "파주시", "latitude": 37.76, "longitude": 126.78},
+    {"id": 41, "sido": "경기도", "sigungu": "군포시", "latitude": 37.3617, "longitude": 126.9353},
+    {"id": 42, "sido": "경기도", "sigungu": "광주시", "latitude": 37.4294, "longitude": 127.2551},
+    {"id": 43, "sido": "경기도", "sigungu": "이천시", "latitude": 37.2723, "longitude": 127.4418},
+    {"id": 44, "sido": "경기도", "sigungu": "양주시", "latitude": 37.7853, "longitude": 127.0457},
+    {"id": 45, "sido": "경기도", "sigungu": "구리시", "latitude": 37.5943, "longitude": 127.1296},
+    {"id": 46, "sido": "경기도", "sigungu": "안성시", "latitude": 37.008, "longitude": 127.2797},
+    {"id": 47, "sido": "경기도", "sigungu": "포천시", "latitude": 37.8949, "longitude": 127.2067},
+    {"id": 48, "sido": "경기도", "sigungu": "의왕시", "latitude": 37.3449, "longitude": 126.9683},
+    {"id": 49, "sido": "경기도", "sigungu": "하남시", "latitude": 37.5393, "longitude": 127.2148},
+    {"id": 50, "sido": "경기도", "sigungu": "여주시", "latitude": 37.2984, "longitude": 127.6371},
+    {"id": 51, "sido": "인천광역시", "sigungu": "중구", "latitude": 37.4728, "longitude": 126.6238},
+    {"id": 52, "sido": "인천광역시", "sigungu": "남동구", "latitude": 37.4469, "longitude": 126.7315},
+    {"id": 53, "sido": "인천광역시", "sigungu": "부평구", "latitude": 37.5071, "longitude": 126.7219},
+    {"id": 54, "sido": "인천광역시", "sigungu": "서구", "latitude": 37.5451, "longitude": 126.676},
+    {"id": 55, "sido": "인천광역시", "sigungu": "연수구", "latitude": 37.4101, "longitude": 126.6783},
+    {"id": 56, "sido": "부산광역시", "sigungu": "해운대구", "latitude": 35.1631, "longitude": 129.1636},
+    {"id": 57, "sido": "부산광역시", "sigungu": "부산진구", "latitude": 35.1601, "longitude": 129.0567},
+    {"id": 58, "sido": "부산광역시", "sigungu": "동래구", "latitude": 35.2048, "longitude": 129.0838},
+    {"id": 59, "sido": "부산광역시", "sigungu": "사하구", "latitude": 35.1044, "longitude": 128.9675},
+    {"id": 60, "sido": "부산광역시", "sigungu": "금정구", "latitude": 35.2427, "longitude": 129.0924},
+    {"id": 61, "sido": "대구광역시", "sigungu": "중구", "latitude": 35.8694, "longitude": 128.6062},
+    {"id": 62, "sido": "대구광역시", "sigungu": "수성구", "latitude": 35.8569, "longitude": 128.63},
+    {"id": 63, "sido": "대구광역시", "sigungu": "달서구", "latitude": 35.8277, "longitude": 128.5348},
+    {"id": 64, "sido": "광주광역시", "sigungu": "동구", "latitude": 35.1461, "longitude": 126.9231},
+    {"id": 65, "sido": "광주광역시", "sigungu": "북구", "latitude": 35.195, "longitude": 126.909},
+    {"id": 66, "sido": "광주광역시", "sigungu": "서구", "latitude": 35.152, "longitude": 126.89},
+    {"id": 67, "sido": "대전광역시", "sigungu": "중구", "latitude": 36.325, "longitude": 127.4208},
+    {"id": 68, "sido": "대전광역시", "sigungu": "서구", "latitude": 36.333, "longitude": 127.369},
+    {"id": 69, "sido": "대전광역시", "sigungu": "유성구", "latitude": 36.362, "longitude": 127.356},
+    {"id": 70, "sido": "울산광역시", "sigungu": "남구", "latitude": 35.5437, "longitude": 129.33},
+    {"id": 71, "sido": "세종특별자치시", "sigungu": "세종시", "latitude": 36.48, "longitude": 127.289},
+    {"id": 72, "sido": "제주특별자치도", "sigungu": "제주시", "latitude": 33.5006, "longitude": 126.5312},
+    {"id": 73, "sido": "제주특별자치도", "sigungu": "서귀포시", "latitude": 33.2541, "longitude": 126.5601},
+    {"id": 74, "sido": "강원특별자치도", "sigungu": "춘천시", "latitude": 37.8813, "longitude": 127.7298},
+    {"id": 75, "sido": "강원특별자치도", "sigungu": "강릉시", "latitude": 37.7518, "longitude": 128.8761},
+    {"id": 76, "sido": "충청북도", "sigungu": "청주시", "latitude": 36.6372, "longitude": 127.4897},
+    {"id": 77, "sido": "충청남도", "sigungu": "천안시", "latitude": 36.815, "longitude": 127.1139},
+    {"id": 78, "sido": "전라북도", "sigungu": "전주시", "latitude": 35.8242, "longitude": 127.148},
+    {"id": 79, "sido": "전라남도", "sigungu": "목포시", "latitude": 34.8118, "longitude": 126.3922},
+    {"id": 80, "sido": "경상북도", "sigungu": "포항시", "latitude": 36.019, "longitude": 129.3434},
+    {"id": 81, "sido": "경상남도", "sigungu": "창원시", "latitude": 35.228, "longitude": 128.6811},
+    {"id": 82, "sido": "경상남도", "sigungu": "김해시", "latitude": 35.234, "longitude": 128.881}
 ]
 
 def seed_database_fallback():
@@ -91,18 +243,36 @@ def get_location_by_name(sido: str, sigungu: str) -> Optional[Dict[str, Any]]:
     return None
 
 def get_all_locations() -> List[Dict[str, Any]]:
-    # 데이터가 없을 시 자동 시드 기동 시도
-    locs = _get_all_locations_raw()
-    if not locs:
-        seed_database_fallback()
-        locs = _get_all_locations_raw()
-    # RLS로 막혀서 여전히 비어있다면 메모리 내 static 시드 리스트 반환 (이중 안전막)
-    if not locs:
-        return [
-            {"sido": x["sido"], "sigungu": x["sigungu"], "latitude": x["latitude"], "longitude": x["longitude"]}
-            for x in SEED_LOCATIONS
-        ]
-    return locs
+    # DB 조회 시도
+    db_locs = _get_all_locations_raw()
+    
+    # 중복 제거 병합용 set/dict 구성
+    merged_map = {}
+    
+    # 1. 로컬 82개 전국 핵심 거점을 기본으로 깔아둠
+    for loc in SEED_LOCATIONS:
+        key = (loc["sido"], loc["sigungu"])
+        merged_map[key] = {
+            "sido": loc["sido"],
+            "sigungu": loc["sigungu"],
+            "latitude": loc["latitude"],
+            "longitude": loc["longitude"]
+        }
+        
+    # 2. DB에서 추가로 읽은 거점이 있다면 덮어쓰기 병합
+    for loc in db_locs:
+        key = (loc["sido"], loc["sigungu"])
+        merged_map[key] = {
+            "sido": loc["sido"],
+            "sigungu": loc["sigungu"],
+            "latitude": loc["latitude"],
+            "longitude": loc["longitude"]
+        }
+        
+    # 시도/시군구 정렬하여 반환
+    result = list(merged_map.values())
+    result.sort(key=lambda x: (x["sido"], x["sigungu"]))
+    return result
 
 def _get_all_locations_raw() -> List[Dict[str, Any]]:
     try:
@@ -134,14 +304,34 @@ def _get_all_locations_raw() -> List[Dict[str, Any]]:
             return []
 
 def get_all_location_coordinates() -> List[Dict[str, Any]]:
-    locs = _get_all_location_coordinates_raw()
-    if not locs:
-        seed_database_fallback()
-        locs = _get_all_location_coordinates_raw()
-    # RLS로 막혀서 여전히 비어있다면 메모리 내 static 시드 리스트 반환 (이중 안전막)
-    if not locs:
-        return SEED_LOCATIONS
-    return locs
+    # DB 조회 시도
+    db_locs = _get_all_location_coordinates_raw()
+    
+    merged_map = {}
+    
+    # 1. 로컬 82개 전국 핵심 거점 정보를 기본으로 로드
+    for loc in SEED_LOCATIONS:
+        key = (loc["sido"], loc["sigungu"])
+        merged_map[key] = {
+            "id": loc["id"],
+            "sido": loc["sido"],
+            "sigungu": loc["sigungu"],
+            "latitude": loc["latitude"],
+            "longitude": loc["longitude"]
+        }
+        
+    # 2. DB에서 로드된 거점이 있다면 덮어쓰기 병합 (DB id 우선 적용)
+    for loc in db_locs:
+        key = (loc["sido"], loc["sigungu"])
+        merged_map[key] = {
+            "id": loc["id"],
+            "sido": loc["sido"],
+            "sigungu": loc["sigungu"],
+            "latitude": loc["latitude"],
+            "longitude": loc["longitude"]
+        }
+        
+    return list(merged_map.values())
 
 def _get_all_location_coordinates_raw() -> List[Dict[str, Any]]:
     try:
@@ -350,5 +540,29 @@ def upsert_historical_weather_fact(
     except Exception as e:
         print(f"Debug [upsert_historical_weather_fact fallback]: {e}")
         return None
+
+
+def seed_all_locations_into_db() -> int:
+    """db_client에 정의된 SEED_LOCATIONS 82개 전국 거점을 location_dimension 테이블에 동기화 시딩합니다."""
+    success_count = 0
+    print(f"📡 [Seeder] Starting DB synchronization for {len(SEED_LOCATIONS)} locations...")
+    for loc in SEED_LOCATIONS:
+        db_data = {
+            "sido": loc["sido"],
+            "sigungu": loc["sigungu"],
+            "latitude": loc["latitude"],
+            "longitude": loc["longitude"]
+        }
+        try:
+            supabase.table("location_dimension").upsert(
+                db_data, 
+                on_conflict="sido,sigungu"
+            ).execute()
+            success_count += 1
+        except Exception as e:
+            print(f"⚠️ [Seeder] Failed to seed location {loc['sido']} {loc['sigungu']}: {e}")
+    print(f"✅ [Seeder] Seeding finished. {success_count}/{len(SEED_LOCATIONS)} locations synced in DB.")
+    return success_count
+
 
 
