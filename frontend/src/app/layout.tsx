@@ -22,6 +22,9 @@ export const metadata: Metadata = {
   title: "Thermal Guide | 개인 맞춤형 체감 열 부하 데이터 서비스",
   description: "개인 신체 스펙(키, 몸무게, 체지방률)과 실시간 기상 데이터를 융합해 최적의 체감 온도 및 의류 가이드를 추천하는 대국민 헬스케어 프로덕트",
   keywords: ["체감온도", "의류 추천", "열부하", "기상 데이터", "PMV 지수", "맞춤형 패션", "개인 헬스케어"],
+  icons: {
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
