@@ -2,7 +2,7 @@
 
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import main  # noqa: E402
 from auth import AuthenticatedUser, require_authenticated_user  # noqa: E402
 import db_client  # noqa: E402
-from weather_client import add_generic_utci  # noqa: E402
+from weather_client import add_generic_utci, is_weather_forecast_cache_fresh, parse_forecast_cache_timestamp  # noqa: E402
 
 
 RECENT_USER = AuthenticatedUser(
@@ -38,6 +38,19 @@ class ForecastCacheUnitTests(unittest.TestCase):
         self.assertEqual(len(enriched["utci"]), 2)
         self.assertTrue(all(isinstance(value, float) for value in enriched["utci"]))
 
+    def test_cache_timestamp_accepts_postgres_trimmed_fractional_seconds(self):
+        parsed = parse_forecast_cache_timestamp("2026-07-16T01:36:59.17201+00:00")
+        self.assertEqual(parsed.microsecond, 172010)
+        self.assertEqual(parsed.tzinfo, timezone.utc)
+
+    def test_forecast_cache_prefers_a_future_expiry(self):
+        self.assertTrue(is_weather_forecast_cache_fresh({
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }))
+        self.assertFalse(is_weather_forecast_cache_fresh({
+            "expires_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        }))
+
     @patch("db_client.get_weather_cache_client")
     def test_location_seed_uses_server_only_client(self, mock_client_factory):
         mock_client = mock_client_factory.return_value
@@ -48,6 +61,29 @@ class ForecastCacheUnitTests(unittest.TestCase):
         self.assertEqual(seeded, len(db_client.SEED_LOCATIONS))
         mock_client.table.assert_called_once_with("location_dimension")
         mock_client.table.return_value.upsert.assert_called_once()
+
+    @patch("db_client.get_weather_cache_client")
+    def test_personalized_cache_only_returns_unexpired_result(self, mock_client_factory):
+        mock_client = mock_client_factory.return_value
+        after_select = mock_client.table.return_value.select.return_value
+        after_user = after_select.eq.return_value
+        after_location = after_user.eq.return_value
+        after_date = after_location.eq.return_value
+        after_hour = after_date.eq.return_value
+        after_fingerprint = after_hour.eq.return_value
+        after_fingerprint.gt.return_value.limit.return_value.execute.return_value.data = [{"result": {"utci_personalized": 21.5}}]
+
+        result = db_client.get_personalized_analysis_cache(
+            RECENT_USER.user_id,
+            6,
+            "2026-07-16",
+            3,
+            "profile-fingerprint",
+        )
+
+        self.assertEqual(result, {"utci_personalized": 21.5})
+        mock_client.table.assert_called_once_with("personalized_analysis_cache")
+        after_fingerprint.gt.assert_called_once()
 
 
 class PhaseContractTests(unittest.TestCase):
@@ -81,6 +117,92 @@ class PhaseContractTests(unittest.TestCase):
         finally:
             main.PUBLIC_RECOMMEND_RATE_LIMIT = original_limit
             main._recommendation_requests.clear()
+
+    def test_public_weather_endpoints_are_rate_limited(self):
+        original_limit = main.PUBLIC_RECOMMEND_RATE_LIMIT
+        main.PUBLIC_RECOMMEND_RATE_LIMIT = 1
+        main._recommendation_requests.clear()
+        try:
+            first = self.client.get("/api/v1/weather/daily")
+            second = self.client.get("/api/v1/weather/daily")
+            self.assertEqual(first.status_code, 422)
+            self.assertEqual(second.status_code, 429)
+            self.assertIn("retry-after", second.headers)
+        finally:
+            main.PUBLIC_RECOMMEND_RATE_LIMIT = original_limit
+            main._recommendation_requests.clear()
+
+    def test_recommendation_hour_must_be_within_forecast_window(self):
+        payload = {
+            "latitude": 37.5,
+            "longitude": 127.0,
+            "selected_hour": 168,
+            "profile": {"height": 171, "weight": 60, "age": 30, "gender": "female"},
+        }
+        response = self.client.post("/api/v1/recommend", json=payload)
+        self.assertEqual(response.status_code, 422)
+
+    def test_recommendation_rejects_invalid_profile_and_coordinates(self):
+        payload = {
+            "latitude": 101,
+            "longitude": 127.0,
+            "profile": {"height": -171, "weight": 60, "age": 30, "gender": "female"},
+        }
+        response = self.client.post("/api/v1/recommend", json=payload)
+        self.assertEqual(response.status_code, 422)
+
+        payload["selected_hour"] = -1
+        response = self.client.post("/api/v1/recommend", json=payload)
+        self.assertEqual(response.status_code, 422)
+
+    @patch("main.get_authenticated_recommendation", new_callable=AsyncMock)
+    def test_recommendation_batch_deduplicates_planned_hours(self, mock_recommendation):
+        mock_recommendation.side_effect = [
+            {"forecast_time": "2026-07-16T03:00", "utci_personalized": 21.0},
+            {"forecast_time": "2026-07-16T05:00", "utci_personalized": 22.0},
+        ]
+        response = self.client.post(
+            "/api/v1/recommendations/batch",
+            json={
+                "latitude": 37.5,
+                "longitude": 127.0,
+                "selected_hours": [3, 5, 3],
+                "profile": {"height": 171, "weight": 60, "age": 30, "gender": "female"},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["selected_hour"] for item in response.json()["recommendations"]], [3, 5])
+        self.assertEqual(mock_recommendation.await_count, 2)
+
+    @patch("main.get_weather_forecast_data", new_callable=AsyncMock)
+    @patch("main.get_all_location_coordinates", return_value=[{"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}])
+    def test_daily_and_hourly_forecasts_share_the_same_weather_data(self, _mock_locations, mock_forecast):
+        mock_forecast.return_value = {
+            "source": "cache",
+            "hourly_data": {
+                "time": ["2026-07-16T00:00", "2026-07-16T01:00", "2026-07-17T00:00"],
+                "temperature_2m": [20.0, 22.0, 18.0],
+                "apparent_temperature": [19.0, 21.0, 17.0],
+                "relativehumidity_2m": [60.0, 70.0, 80.0],
+                "windspeed_10m": [1.0, 2.0, 3.0],
+                "precipitation_probability": [10.0, 40.0, 90.0],
+                "utci": [19.5, 21.5, 17.5],
+            },
+        }
+
+        daily = self.client.get("/api/v1/weather/daily?latitude=37.5&longitude=127.0")
+        self.assertEqual(daily.status_code, 200)
+        self.assertEqual(daily.json()["daily"][0]["temperature_min"], 20.0)
+        self.assertEqual(daily.json()["daily"][0]["temperature_max"], 22.0)
+        self.assertEqual(daily.json()["daily"][0]["precipitation_probability_max"], 40)
+
+        hourly = self.client.get("/api/v1/weather/hourly?latitude=37.5&longitude=127.0&date=2026-07-17")
+        self.assertEqual(hourly.status_code, 200)
+        self.assertEqual(hourly.json()["hourly"][0]["time"], "2026-07-17T00:00")
+        self.assertEqual(hourly.json()["hourly"][0]["utci"], 17.5)
+
+        invalid_date = self.client.get("/api/v1/weather/hourly?latitude=37.5&longitude=127.0&date=2026-99-99")
+        self.assertEqual(invalid_date.status_code, 422)
 
     @patch("main.get_phase1_profile", return_value={"user_id": RECENT_USER.user_id, "height_cm": 171})
     def test_profile_reads_only_authenticated_user(self, _mock_profile):
@@ -147,6 +269,24 @@ class PhaseContractTests(unittest.TestCase):
         self.assertEqual(response.json()["recommendations"]["clothing"][0], "내 옷장: 보유 패딩")
         self.assertNotIn("세탁 중 패딩", response.json()["recommendations"]["clothing"])
         self.assertEqual(response.json()["personalization"]["feedback_warmth_bias"], 1.0)
+
+    @patch("main.get_personalized_analysis_cache", return_value={"utci_personalized": 21.5, "recommendations": {"clothing": []}})
+    @patch("main.get_all_location_coordinates", return_value=[{"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}])
+    @patch("main.get_recommendation", new_callable=AsyncMock)
+    def test_authenticated_recommendation_uses_valid_personal_cache(self, mock_recommendation, _mock_locations, _mock_cache):
+        response = self.client.post(
+            "/api/v1/recommendations",
+            json={
+                "latitude": 37.5,
+                "longitude": 127.0,
+                "selected_hour": 3,
+                "profile": {"height": 171, "weight": 60, "age": 30, "gender": "female"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cache_status"], "hit")
+        mock_recommendation.assert_not_awaited()
 
 
 if __name__ == "__main__":

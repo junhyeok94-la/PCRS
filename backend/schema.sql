@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS weather_forecast_cache (
     location_id INTEGER REFERENCES location_dimension(id) ON DELETE CASCADE PRIMARY KEY,
     forecast_date DATE NOT NULL,
     hourly_data JSONB NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT (NOW() + INTERVAL '3 hours')
 );
 
 -- 3. 사용자 피드백 로그 테이블 생성 (개인 의류 단열 편향(CLO bias) 보정용)

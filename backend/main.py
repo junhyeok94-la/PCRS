@@ -3,6 +3,7 @@ import os
 import math
 import datetime
 import json
+import hashlib
 import threading
 import time
 from collections import defaultdict, deque
@@ -14,7 +15,7 @@ if sys.platform == 'win32':
         sys.stderr.reconfigure(encoding='utf-8')
     except AttributeError:
         pass
-from typing import Literal, Optional, Dict, Any, List
+from typing import Annotated, Literal, Optional, Dict, Any, List
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -31,6 +32,9 @@ from db_client import (
     get_all_location_coordinates,
     get_weather_forecast_cache,
     upsert_weather_forecast_cache,
+    get_personalized_analysis_cache,
+    upsert_personalized_analysis_cache,
+    invalidate_personalized_analysis_cache_for_user,
     get_phase1_consents,
     get_phase1_profile,
     upsert_phase1_consents,
@@ -55,7 +59,7 @@ from db_client import (
     seed_all_locations_into_db
 )
 from auth import AuthenticatedUser, require_authenticated_user
-from weather_client import add_generic_utci, get_weather_forecast_data, fetch_weather_forecast_from_api
+from weather_client import add_generic_utci, get_weather_forecast_data, fetch_weather_forecast_from_api, is_weather_forecast_cache_fresh
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
 # ─────────────────────────────────────────────
@@ -108,6 +112,12 @@ def run_weather_collect_batch():
         loc_id = loc["id"]
         lat = float(loc["latitude"])
         lon = float(loc["longitude"])
+
+        # Avoid refreshing a valid entry when the process restarts or another
+        # worker has already completed the same scheduled batch.
+        if is_weather_forecast_cache_fresh(get_weather_forecast_cache(loc_id, today_str)):
+            print(f"⏭️ [Batch] Fresh cache exists for {loc['sido']} {loc['sigungu']}; skipping.")
+            return
         
         # 1. Open-Meteo API에서 기상 데이터 긁어오기
         hourly_raw = await fetch_weather_forecast_from_api(lat, lon)
@@ -214,14 +224,18 @@ async def lifespan(app: FastAPI):
         'interval',
         hours=int(os.getenv("WEATHER_BATCH_INTERVAL_HOURS", "3")),
         id='weather_collect_job',
+        coalesce=True,
+        max_instances=1,
     )
     scheduler.add_job(run_account_deletion_batch, 'interval', days=1, id='account_deletion_job')
     scheduler.start()
     print("🚀 Background scheduler started. Weather collect batch registered (every 3 hours).")
     
-    # 서버 기동 시 최초 1회 즉시 실행하여 캐시 확보 (비동기 스레드 실행 방해 없이 백그라운드 실행)
-    import threading
-    threading.Thread(target=run_weather_collect_batch, daemon=True).start()
+    # A full nationwide warmup is expensive. Enable it only on one designated
+    # worker; normal requests still fetch a missing location on demand.
+    if os.getenv("WEATHER_WARMUP_ON_STARTUP", "false").lower() == "true":
+        import threading
+        threading.Thread(target=run_weather_collect_batch, daemon=True).start()
     
     yield
     # 셧다운 시 스케줄러 중단
@@ -257,13 +271,18 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# This process-local limit protects the public recommendation endpoint from
-# expensive weather-provider abuse. Apply an equivalent edge/proxy limit in
-# production when the API runs with multiple workers.
+# This process-local limit protects public routes that can trigger weather
+# provider work. Apply an equivalent edge/proxy limit in production when the
+# API runs with multiple workers.
 PUBLIC_RECOMMEND_RATE_LIMIT = int(os.getenv("PUBLIC_RECOMMEND_RATE_LIMIT", "20"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 _recommendation_requests: dict[str, deque[float]] = defaultdict(deque)
 _recommendation_rate_lock = threading.Lock()
+RATE_LIMITED_PUBLIC_ROUTES = {
+    ("POST", "/api/v1/recommend"),
+    ("GET", "/api/v1/weather/daily"),
+    ("GET", "/api/v1/weather/hourly"),
+}
 
 
 def _client_ip(request: Request) -> str:
@@ -276,7 +295,7 @@ def _client_ip(request: Request) -> str:
 
 @app.middleware("http")
 async def add_security_headers_and_limit_public_recommendations(request: Request, call_next):
-    if request.method == "POST" and request.url.path == "/api/v1/recommend":
+    if (request.method, request.url.path) in RATE_LIMITED_PUBLIC_ROUTES:
         now = time.monotonic()
         client_ip = _client_ip(request)
         with _recommendation_rate_lock:
@@ -286,7 +305,7 @@ async def add_security_headers_and_limit_public_recommendations(request: Request
             if len(recent) >= PUBLIC_RECOMMEND_RATE_LIMIT:
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={"detail": "Too many recommendation requests. Please try again shortly."},
+                    content={"detail": "Too many weather analysis requests. Please try again shortly."},
                     headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
                 )
             recent.append(now)
@@ -305,13 +324,13 @@ async def add_security_headers_and_limit_public_recommendations(request: Request
 # ─────────────────────────────────────────────
 class Profile(BaseModel):
     user_id: Optional[str] = "default_user"
-    height: float             # cm
-    weight: float             # kg
-    age: Optional[int] = 30   # 나이
-    body_fat: Optional[float] = None  # 체지방률 %
-    gender: str               # male | female
-    environment: Optional[str] = "outdoor"  # indoor | outdoor
-    activity_level: Optional[str] = "walking"  # sedentary | walking | cycling | running
+    height: float = Field(ge=100, le=250)  # cm
+    weight: float = Field(ge=25, le=300)  # kg
+    age: Optional[int] = Field(default=30, ge=14, le=120)
+    body_fat: Optional[float] = Field(default=None, ge=2, le=70)  # 체지방률 %
+    gender: Literal["male", "female"]
+    environment: Literal["indoor", "outdoor"] = "outdoor"
+    activity_level: Literal["sedentary", "walking", "cycling", "running"] = "walking"
 
 class FeedbackRequest(BaseModel):
     user_id: str = "default_user"
@@ -332,10 +351,18 @@ class UserProfileRequest(BaseModel):
 
 class RecommendationRequest(BaseModel):
     profile: Profile
-    latitude: float
-    longitude: float
-    selected_hour: Optional[int] = None
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    selected_hour: Optional[int] = Field(default=None, ge=0, le=167)
     lang: Optional[str] = "ko"  # ko | en | ja
+
+
+class RecommendationBatchRequest(BaseModel):
+    profile: Profile
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    selected_hours: List[Annotated[int, Field(ge=0, le=167)]] = Field(min_length=1, max_length=23)
+    lang: Optional[str] = "ko"
 
 
 class Phase1ProfileUpdateRequest(BaseModel):
@@ -643,6 +670,7 @@ def update_my_profile(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Profile storage is unavailable. Confirm the Phase 1 migration has been applied.",
         )
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "profile": updated}
 
 
@@ -692,6 +720,7 @@ def add_my_wardrobe_item(
     item = create_wardrobe_item(current_user.access_token, current_user.user_id, payload.model_dump())
     if item is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Wardrobe storage is unavailable. Confirm the Phase 3 migration has been applied.")
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "item": item}
 
 
@@ -707,6 +736,7 @@ def update_my_wardrobe_item(
     item = update_wardrobe_item(current_user.access_token, current_user.user_id, item_id, changes)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "item": item}
 
 
@@ -717,6 +747,7 @@ def remove_my_wardrobe_item(
 ):
     if not archive_wardrobe_item(current_user.access_token, current_user.user_id, item_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok"}
 
 
@@ -769,6 +800,7 @@ def add_recommendation_feedback(
     feedback = create_recommendation_feedback(current_user.access_token, current_user.user_id, payload.model_dump(exclude_none=True))
     if feedback is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback storage is unavailable. Confirm the Phase 3 migration has been applied.")
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {
         "status": "ok",
         "feedback": feedback,
@@ -780,6 +812,7 @@ def add_recommendation_feedback(
 def clear_my_recommendation_feedback(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
     if not clear_recommendation_feedback(current_user.access_token, current_user.user_id):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback reset is unavailable.")
+    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok"}
 
 
@@ -823,6 +856,101 @@ def cancel_my_deletion_request(current_user: AuthenticatedUser = Depends(require
     return {"status": "ok", "message": "Account deletion has been cancelled."}
 
 
+@app.get("/api/v1/weather/daily")
+async def get_daily_weather_summary(
+    latitude: float = Query(..., ge=-90, le=90),
+    longitude: float = Query(..., ge=-180, le=180),
+):
+    """Return seven daily summaries derived from the shared hourly forecast."""
+    locations = get_all_location_coordinates() or SEED_LOCATIONS
+    mapped_location = min(
+        locations,
+        key=lambda location: haversine_distance(
+            latitude,
+            longitude,
+            float(location["latitude"]),
+            float(location["longitude"]),
+        ),
+    )
+    forecast_wrapper = await get_weather_forecast_data(
+        mapped_location["id"],
+        float(mapped_location["latitude"]),
+        float(mapped_location["longitude"]),
+    )
+    hourly_data = forecast_wrapper["hourly_data"]
+    daily: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: {
+        "temperatures": [], "humidities": [], "precipitation_probabilities": [],
+    })
+    for index, timestamp in enumerate(hourly_data.get("time", [])):
+        if index >= len(hourly_data.get("temperature_2m", [])):
+            break
+        day = timestamp[:10]
+        daily[day]["temperatures"].append(float(hourly_data["temperature_2m"][index]))
+        if index < len(hourly_data.get("relativehumidity_2m", [])):
+            daily[day]["humidities"].append(float(hourly_data["relativehumidity_2m"][index]))
+        if index < len(hourly_data.get("precipitation_probability", [])):
+            daily[day]["precipitation_probabilities"].append(float(hourly_data["precipitation_probability"][index]))
+
+    summaries = [
+        {
+            "date": day,
+            "temperature_min": round(min(values["temperatures"]), 1),
+            "temperature_max": round(max(values["temperatures"]), 1),
+            "humidity_avg": round(sum(values["humidities"]) / len(values["humidities"])) if values["humidities"] else None,
+            "precipitation_probability_max": round(max(values["precipitation_probabilities"])) if values["precipitation_probabilities"] else 0,
+        }
+        for day, values in sorted(daily.items())[:7]
+        if values["temperatures"]
+    ]
+    return {
+        "location": {"sido": mapped_location["sido"], "sigungu": mapped_location["sigungu"]},
+        "daily": summaries,
+        "source": forecast_wrapper["source"],
+    }
+
+
+@app.get("/api/v1/weather/hourly")
+async def get_hourly_weather_detail(
+    latitude: float = Query(..., ge=-90, le=90),
+    longitude: float = Query(..., ge=-180, le=180),
+    date: Optional[datetime.date] = Query(default=None),
+):
+    """Return a selected day's hourly conditions from the shared forecast cache."""
+    locations = get_all_location_coordinates() or SEED_LOCATIONS
+    mapped_location = min(
+        locations,
+        key=lambda location: haversine_distance(
+            latitude,
+            longitude,
+            float(location["latitude"]),
+            float(location["longitude"]),
+        ),
+    )
+    forecast_wrapper = await get_weather_forecast_data(
+        mapped_location["id"],
+        float(mapped_location["latitude"]),
+        float(mapped_location["longitude"]),
+    )
+    hourly_data = forecast_wrapper["hourly_data"]
+    target_date = date.isoformat() if date else (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
+    entries = []
+    for index, timestamp in enumerate(hourly_data.get("time", [])):
+        if not timestamp.startswith(target_date):
+            continue
+        if index >= len(hourly_data.get("temperature_2m", [])):
+            continue
+        entries.append({
+            "time": timestamp,
+            "temperature": hourly_data["temperature_2m"][index],
+            "apparent_temperature": hourly_data.get("apparent_temperature", [hourly_data["temperature_2m"][index]])[index],
+            "humidity": hourly_data.get("relativehumidity_2m", [None] * len(hourly_data["time"]))[index],
+            "wind_speed": hourly_data.get("windspeed_10m", [None] * len(hourly_data["time"]))[index],
+            "precipitation_probability": hourly_data.get("precipitation_probability", [0] * len(hourly_data["time"]))[index],
+            "utci": hourly_data.get("utci", [None] * len(hourly_data["time"]))[index],
+        })
+    return {"date": target_date, "hourly": entries, "source": forecast_wrapper["source"]}
+
+
 @app.post("/api/v1/recommend")
 async def get_recommendation(payload: RecommendationRequest):
     """
@@ -862,10 +990,30 @@ async def get_recommendation(payload: RecommendationRequest):
     hourly_data = forecast_wrapper["hourly_data"]
     
     current_time_obj = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-    hour = selected_hour if selected_hour is not None else current_time_obj.hour
+    # The provider returns an hourly timeline covering multiple days. Treat a
+    # client-selected hour as an index into that timeline, rather than clipping
+    # it to today's 00:00–23:00 range.
+    time_values = hourly_data.get("time", [])
+    if selected_hour is None:
+        current_hour_key = current_time_obj.strftime("%Y-%m-%dT%H:00")
+        try:
+            hour_idx = time_values.index(current_hour_key)
+        except ValueError:
+            hour_idx = current_time_obj.hour
+    else:
+        hour_idx = selected_hour
     
     # 시간 인덱스 획득 (오늘의 0~23시 범위)
-    hour_idx = min(23, max(0, hour))
+    max_hour_idx = min(
+        len(time_values),
+        len(hourly_data.get("temperature_2m", [])),
+        len(hourly_data.get("relativehumidity_2m", [])),
+        len(hourly_data.get("windspeed_10m", [])),
+        len(hourly_data.get("shortwave_radiation", [])),
+    ) - 1
+    if max_hour_idx < 0:
+        raise HTTPException(status_code=503, detail="Hourly weather forecast is unavailable.")
+    hour_idx = min(max_hour_idx, max(0, hour_idx))
     
     # ── 3. 매핑된 시간대의 기상 요소 및 지역 UTCI 추출 ──────
     tdb = hourly_data["temperature_2m"][hour_idx]
@@ -1094,6 +1242,7 @@ async def get_recommendation(payload: RecommendationRequest):
 
     # ── 8. 최종 JSON 반환 ─────────────────────────────
     return {
+        "forecast_time": time_values[hour_idx] if hour_idx < len(time_values) else None,
         "mapped_location": {
             "sido": mapped_location["sido"],
             "sigungu": mapped_location["sigungu"],
@@ -1152,6 +1301,37 @@ async def get_authenticated_recommendation(
     both wardrobe and feedback reads.
     """
     payload.profile.user_id = current_user.user_id
+
+    # Cache only authenticated results. The weather cache is shared, while this
+    # cache is private and keyed by the personal inputs that affect the result.
+    locations = get_all_location_coordinates() or SEED_LOCATIONS
+    mapped_location = min(
+        locations,
+        key=lambda location: haversine_distance(
+            payload.latitude,
+            payload.longitude,
+            float(location["latitude"]),
+            float(location["longitude"]),
+        ),
+    )
+    korea_now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    forecast_date = korea_now.strftime("%Y-%m-%d")
+    cache_hour = min(167, max(0, payload.selected_hour if payload.selected_hour is not None else korea_now.hour))
+    profile_inputs = payload.profile.model_dump(exclude={"user_id"})
+    profile_fingerprint = hashlib.sha256(
+        json.dumps(profile_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    cached_result = get_personalized_analysis_cache(
+        current_user.user_id,
+        int(mapped_location["id"]),
+        forecast_date,
+        cache_hour,
+        profile_fingerprint,
+    )
+    if cached_result is not None:
+        cached_result["cache_status"] = "hit"
+        return cached_result
+
     result = await get_recommendation(payload)
     wardrobe = get_wardrobe_items(current_user.access_token, current_user.user_id)
     warmth_bias = get_recommendation_feedback_warmth_bias(current_user.access_token, current_user.user_id)
@@ -1182,7 +1362,38 @@ async def get_authenticated_recommendation(
         "target_warmth_level": target_warmth,
         "current_season": current_season,
     }
+    result["cache_status"] = "miss"
+    upsert_personalized_analysis_cache(
+        current_user.user_id,
+        int(mapped_location["id"]),
+        forecast_date,
+        cache_hour,
+        profile_fingerprint,
+        result,
+    )
     return result
+
+
+@app.post("/api/v1/recommendations/batch")
+async def get_authenticated_recommendation_batch(
+    payload: RecommendationBatchRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    """Return planned forecast hours in one authenticated request."""
+    selected_hours = list(dict.fromkeys(payload.selected_hours))
+    results = []
+    for selected_hour in selected_hours:
+        request_payload = RecommendationRequest(
+            profile=payload.profile.model_copy(deep=True),
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            selected_hour=selected_hour,
+            lang=payload.lang,
+        )
+        result = await get_authenticated_recommendation(request_payload, current_user)
+        results.append({"selected_hour": selected_hour, "recommendation": result})
+    return {"recommendations": results}
+
 
 # ─────────────────────────────────────────────
 # 9. 로컬 실행용 엔트리포인트

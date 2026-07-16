@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 import httpx
@@ -7,6 +8,46 @@ from utci_pure import calculate_utci_pure as calc_utci_raw
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 FORECAST_CACHE_TTL_SECONDS = int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800"))
+
+
+def parse_forecast_cache_timestamp(value: str) -> datetime.datetime:
+    """Parse PostgREST timestamps on Python versions with strict fractions.
+
+    PostgreSQL can omit trailing zeros in a fractional second (for example,
+    ``.17201``). Python 3.10 rejects some of those otherwise-valid ISO 8601
+    variants, so normalize the fraction before comparing cache expiry.
+    """
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(normalized)
+    except ValueError:
+        prefix, separator, remainder = normalized.partition(".")
+        if not separator:
+            raise
+        timezone_start = next((index for index, char in enumerate(remainder) if char in "+-"), len(remainder))
+        fraction = remainder[:timezone_start]
+        timezone_suffix = remainder[timezone_start:]
+        if not fraction.isdigit():
+            raise
+        parsed = datetime.datetime.fromisoformat(
+            f"{prefix}.{fraction.ljust(6, '0')[:6]}{timezone_suffix}"
+        )
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def is_weather_forecast_cache_fresh(cache: Optional[Dict[str, Any]]) -> bool:
+    """Return whether a cached forecast is still valid without raising."""
+    if not cache:
+        return False
+    try:
+        utc_now = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = cache.get("expires_at")
+        if expires_at:
+            return utc_now < parse_forecast_cache_timestamp(expires_at)
+        created_at = parse_forecast_cache_timestamp(cache["updated_at"])
+        return utc_now - created_at < datetime.timedelta(seconds=FORECAST_CACHE_TTL_SECONDS)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def add_generic_utci(hourly_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,28 +160,25 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
     except Exception as e:
         print(f"⚠️ Forecast Cache query failed: {e}")
         
-    if cache:
-        try:
-            created_str = cache["updated_at"].replace("Z", "+00:00")
-            created_at = datetime.datetime.fromisoformat(created_str)
-            utc_now = datetime.datetime.now(created_at.tzinfo)
-            # 1시간 이내이면 Cache Hit
-            if utc_now - created_at < datetime.timedelta(seconds=FORECAST_CACHE_TTL_SECONDS):
-                print("🚀 Cache Hit: Using forecast data from Supabase weather_forecast_cache.")
-                return {
-                    "hourly_data": cache["hourly_data"],
-                    "source": "cache"
-                }
-        except Exception as e:
-            print(f"⚠️ Cache expiry check error: {e}")
+    if is_weather_forecast_cache_fresh(cache):
+        print("🚀 Cache Hit: Using forecast data from Supabase weather_forecast_cache.")
+        return {
+            "hourly_data": cache["hourly_data"],
+            "source": "cache"
+        }
             
     # 2. Cache Miss: Open-Meteo API 직접 호출
     print("🔮 Cache Miss: Fetching live weather forecast from Open-Meteo.")
-    live_data = await fetch_weather_forecast_from_api(lat, lon)
+    # These independent provider calls used to run serially, which made a cold
+    # cache wait for both network round trips before any recommendation could
+    # be returned.
+    live_data, air_data = await asyncio.gather(
+        fetch_weather_forecast_from_api(lat, lon),
+        fetch_air_quality_from_api(lat, lon),
+    )
     
     if live_data:
         # 대기질 데이터도 병합해서 가져오기
-        air_data = await fetch_air_quality_from_api(lat, lon)
         if air_data:
             length = len(live_data.get("time", []))
             live_data["pm10"] = air_data.get("pm10", [0.0] * length)

@@ -699,15 +699,84 @@ def upsert_weather_forecast_cache(location_id: int, date_str: str, hourly_data: 
         data = {
             "location_id": location_id,
             "forecast_date": date_str,
-            "hourly_data": hourly_data
+            "hourly_data": hourly_data,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800")))).isoformat(),
         }
         response = get_weather_cache_client().table("weather_forecast_cache") \
             .upsert(data, on_conflict="location_id") \
             .execute()
+        invalidate_personalized_analysis_cache_for_location(location_id)
         return response.data
     except Exception as exc:
         print(f"ERROR [weather_forecast_cache upsert]: {exc}")
+    return None
+
+
+def get_personalized_analysis_cache(
+    user_id: str,
+    location_id: int,
+    forecast_date: str,
+    selected_hour: int,
+    profile_fingerprint: str,
+) -> Optional[Dict[str, Any]]:
+    """Read a still-valid authenticated recommendation cache entry."""
+    try:
+        response = get_weather_cache_client().table("personalized_analysis_cache") \
+            .select("result") \
+            .eq("user_id", user_id) \
+            .eq("location_id", location_id) \
+            .eq("forecast_date", forecast_date) \
+            .eq("selected_hour", selected_hour) \
+            .eq("profile_fingerprint", profile_fingerprint) \
+            .gt("expires_at", datetime.now(timezone.utc).isoformat()) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            return response.data[0].get("result")
+    except Exception:
+        # The feature is deliberately optional while its migration rolls out.
         return None
+    return None
+
+
+def upsert_personalized_analysis_cache(
+    user_id: str,
+    location_id: int,
+    forecast_date: str,
+    selected_hour: int,
+    profile_fingerprint: str,
+    result: Dict[str, Any],
+) -> None:
+    try:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800")))
+        get_weather_cache_client().table("personalized_analysis_cache").upsert(
+            {
+                "user_id": user_id,
+                "location_id": location_id,
+                "forecast_date": forecast_date,
+                "selected_hour": selected_hour,
+                "profile_fingerprint": profile_fingerprint,
+                "result": result,
+                "expires_at": expires_at.isoformat(),
+            },
+            on_conflict="user_id,location_id,forecast_date,selected_hour,profile_fingerprint",
+        ).execute()
+    except Exception:
+        pass
+
+
+def invalidate_personalized_analysis_cache_for_user(user_id: str) -> None:
+    try:
+        get_weather_cache_client().table("personalized_analysis_cache").delete().eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
+def invalidate_personalized_analysis_cache_for_location(location_id: int) -> None:
+    try:
+        get_weather_cache_client().table("personalized_analysis_cache").delete().eq("location_id", location_id).execute()
+    except Exception:
+        pass
 
 def insert_user_feedback(user_id: str, feedback_type: str, utci: float, temp: float, clo: float) -> Optional[Any]:
     try:

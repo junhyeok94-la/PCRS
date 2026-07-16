@@ -22,3 +22,5 @@ services:
         value: "60"
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      - key: WEATHER_WARMUP_ON_STARTUP
+        value: "false"

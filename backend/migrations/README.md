@@ -33,4 +33,8 @@ Run `007_wardrobe_item_details.sql` after the wardrobe migrations. It adds subca
 
 ## Shared weather cache
 
-Run `008_weather_forecast_cache_server_only.sql`. The backend writes this shared cache through `SUPABASE_SERVICE_ROLE_KEY`; browser roles cannot read or change it. Set `FORECAST_CACHE_TTL_SECONDS` and `WEATHER_BATCH_INTERVAL_HOURS` to the same interval (the default is 3 hours) so normal requests reuse the scheduled forecast refresh.
+Run `008_weather_forecast_cache_server_only.sql`. The backend writes this shared cache through `SUPABASE_SERVICE_ROLE_KEY`; browser roles cannot read or change it. Set `FORECAST_CACHE_TTL_SECONDS` and `WEATHER_BATCH_INTERVAL_HOURS` to the same interval (the default is 3 hours) so normal requests reuse the scheduled forecast refresh. `WEATHER_WARMUP_ON_STARTUP` defaults to `false`; set it to `true` only on one designated worker when a full nationwide warmup is required.
+
+## Personalized analysis cache
+
+Run `009_personalized_analysis_cache.sql` after Phase 1, Phase 3, and the shared weather-cache migration. It adds a server-only cache for authenticated recommendation results and makes `weather_forecast_cache.updated_at` advance on every refresh. Results are invalidated when weather, profile, wardrobe, or feedback data changes.

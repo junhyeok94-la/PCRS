@@ -57,6 +57,7 @@ interface UserProfile {
 }
 
 interface Recommendation {
+  forecast_time?: string | null;
   utci: number;
   utci_personalized: number;
   thermal_sensation: string;
@@ -65,6 +66,24 @@ interface Recommendation {
   nudge?: { nudge_warning: boolean; nudge_message: string };
   suitability?: { name: string; score: number }[];
   personalization?: { wardrobe_items_used: number; feedback_warmth_bias: number; target_warmth_level: number; current_season: string };
+}
+
+interface DailyForecast {
+  date: string;
+  temperature_min: number;
+  temperature_max: number;
+  humidity_avg: number | null;
+  precipitation_probability_max: number;
+}
+
+interface HourlyForecast {
+  time: string;
+  temperature: number;
+  apparent_temperature: number;
+  humidity: number | null;
+  wind_speed: number | null;
+  precipitation_probability: number;
+  utci: number | null;
 }
 
 interface WardrobeItem {
@@ -105,6 +124,13 @@ interface SelectedLocation {
   label: string;
 }
 
+interface ActivityPlan {
+  activity: Activity;
+  environment: Environment;
+  startHourIndex: number;
+  durationHours: number;
+}
+
 const emptyProfile: UserProfile = {
   height_cm: "",
   weight_kg: "",
@@ -116,6 +142,19 @@ const emptyProfile: UserProfile = {
   default_environment: "outdoor",
   indoor_temperature_c: "",
 };
+
+const HOURLY_FORECAST_COUNT = 6;
+
+function getHourlyForecastIndices(now = new Date()) {
+  // The API forecast timeline starts at today's midnight. Do not cap at 23:
+  // tomorrow's early-morning entries follow as 24, 25, and so on.
+  return Array.from({ length: HOURLY_FORECAST_COUNT }, (_, index) => now.getHours() + index);
+}
+
+function forecastChartLabel(index: number) {
+  const hour = index % 24;
+  return `${index >= 24 ? "내일 " : ""}${String(hour).padStart(2, "0")}시`;
+}
 
 const activityLabels: Record<Activity, string> = {
   sedentary: "휴식",
@@ -137,6 +176,20 @@ function formatError(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function formatApiDetail(detail: unknown, fallback: string) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const validationError = item as { loc?: unknown; msg?: unknown };
+      const field = Array.isArray(validationError.loc) ? validationError.loc.filter((part) => part !== "body").join(".") : "";
+      return typeof validationError.msg === "string" ? (field ? `${field}: ${validationError.msg}` : validationError.msg) : null;
+    }).filter((message): message is string => Boolean(message));
+    if (messages.length) return messages.join(" / ");
+  }
+  return fallback;
+}
+
 function parseOptionalNumber(value: string) {
   return value.trim() === "" ? undefined : Number(value);
 }
@@ -148,6 +201,10 @@ export default function DashboardPage() {
   const [authResolved, setAuthResolved] = useState(false);
   const [profileReady, setProfileReady] = useState(false);
   const initialAnalysisStarted = useRef(false);
+  const analysisRequestId = useRef(0);
+  const dailyForecastRequestId = useRef(0);
+  const loadProfileRef = useRef<(() => Promise<void>) | null>(null);
+  const loadDashboardRef = useRef<(() => Promise<void>) | null>(null);
   const [profile, setProfile] = useState<UserProfile>(emptyProfile);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<"signIn" | "signUp">("signIn");
@@ -162,6 +219,11 @@ export default function DashboardPage() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [hourlyRecommendations, setHourlyRecommendations] = useState<Record<number, Recommendation>>({});
+  const [activityPlan, setActivityPlan] = useState<ActivityPlan>(() => ({ activity: "walking", environment: "outdoor", startHourIndex: new Date().getHours(), durationHours: HOURLY_FORECAST_COUNT }));
+  const activityPlanCustomized = useRef(false);
+  const [dailyForecast, setDailyForecast] = useState<DailyForecast[]>([]);
+  const [dailyForecastLoading, setDailyForecastLoading] = useState(false);
+  const [dailyForecastError, setDailyForecastError] = useState<string | null>(null);
   const [recommendationError, setRecommendationError] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [selectedFeedback, setSelectedFeedback] = useState<"too_hot" | "comfortable" | "too_cold" | null>(null);
@@ -276,7 +338,8 @@ export default function DashboardPage() {
         }),
       });
       if (!response.ok) throw new Error("프로필 저장에 실패했습니다. 입력 범위를 확인해 주세요.");
-      setSaveMessage("개인화 프로필을 저장했습니다. 다음 추천부터 반영됩니다.");
+      setSaveMessage("개인화 프로필을 저장했습니다. 최신 분석에 반영했습니다.");
+      await loadDashboard();
     } catch (error) {
       setSaveMessage(formatError(error, "프로필을 저장하지 못했습니다."));
     } finally {
@@ -284,99 +347,167 @@ export default function DashboardPage() {
     }
   }
 
-  async function requestRecommendation(selectedHour?: number, targetLocation: SelectedLocation = location) {
+  function recommendationRequestBody(selectedHour: number | undefined, targetLocation: SelectedLocation, plan?: Pick<ActivityPlan, "activity" | "environment">) {
       const currentYear = new Date().getFullYear();
       const age = profile.birth_year ? Math.max(14, currentYear - Number(profile.birth_year)) : 30;
-      const legacyActivity = profile.default_activity === "commute" ? "walking" : profile.default_activity === "outdoor_work" ? "cycling" : profile.default_activity === "indoor_exercise" ? "sedentary" : profile.default_activity;
+      const activity = plan?.activity ?? profile.default_activity;
+      const environment = plan?.environment ?? profile.default_environment;
+      const legacyActivity = activity === "commute" ? "walking" : activity === "outdoor_work" ? "cycling" : activity === "indoor_exercise" ? "sedentary" : activity;
+      return {
+        latitude: targetLocation.latitude,
+        longitude: targetLocation.longitude,
+        lang: "ko",
+        selected_hour: selectedHour,
+        profile: {
+          user_id: user?.id ?? "guest",
+          height: Number(profile.height_cm) || 171,
+          weight: Number(profile.weight_kg) || 60,
+          age,
+          body_fat: parseOptionalNumber(profile.body_fat_pct),
+          gender: profile.sex === "male" ? "male" : "female",
+          environment: environment === "indoor" ? "indoor" : "outdoor",
+          activity_level: legacyActivity,
+        },
+      };
+  }
+
+  async function requestRecommendation(selectedHour?: number, targetLocation: SelectedLocation = location, plan?: Pick<ActivityPlan, "activity" | "environment">) {
       const response = await fetch(`${API_BASE_URL}${session ? "/api/v1/recommendations" : "/api/v1/recommend"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-        body: JSON.stringify({
-          latitude: targetLocation.latitude,
-          longitude: targetLocation.longitude,
-          lang: "ko",
-          selected_hour: selectedHour,
-          profile: {
-            user_id: user?.id ?? "guest",
-            height: Number(profile.height_cm) || 171,
-            weight: Number(profile.weight_kg) || 60,
-            age,
-            body_fat: parseOptionalNumber(profile.body_fat_pct),
-            gender: profile.sex === "male" ? "male" : "female",
-            environment: profile.default_environment === "indoor" ? "indoor" : "outdoor",
-            activity_level: legacyActivity,
-          },
-        }),
+        body: JSON.stringify(recommendationRequestBody(selectedHour, targetLocation, plan)),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as { detail?: string } | null;
         if (response.status === 401) throw new Error("로그인 세션이 만료되었습니다. 다시 로그인해 주세요.");
-        throw new Error(payload?.detail || `날씨 분석을 불러오지 못했습니다. (${response.status})`);
+        throw new Error(formatApiDetail(payload?.detail, `날씨 분석을 불러오지 못했습니다. (${response.status})`));
       }
       return await response.json() as Recommendation;
   }
 
-  async function loadRecommendation() {
-    setBusy(true);
-    setRecommendationError(null);
+  async function requestHourlyBatch(selectedHours: number[], targetLocation: SelectedLocation, plan?: Pick<ActivityPlan, "activity" | "environment">) {
+    if (!session) return await Promise.all(selectedHours.map(async (hour) => [hour, await requestRecommendation(hour, targetLocation, plan)] as const));
+    const requestBody = recommendationRequestBody(undefined, targetLocation, plan);
+    const response = await fetch(`${API_BASE_URL}/api/v1/recommendations/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ ...requestBody, selected_hours: selectedHours }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
+      throw new Error(formatApiDetail(payload?.detail, `시간별 분석을 불러오지 못했습니다. (${response.status})`));
+    }
+    const data = await response.json() as { recommendations: { selected_hour: number; recommendation: Recommendation }[] };
+    return data.recommendations.map((item) => [item.selected_hour, item.recommendation] as const);
+  }
+
+  async function loadDailyForecast(targetLocation: SelectedLocation) {
+    const requestId = ++dailyForecastRequestId.current;
+    setDailyForecastLoading(true);
+    setDailyForecastError(null);
     try {
-      setRecommendation(await requestRecommendation());
+      const params = new URLSearchParams({
+        latitude: String(targetLocation.latitude),
+        longitude: String(targetLocation.longitude),
+      });
+      const response = await fetch(`${API_BASE_URL}/api/v1/weather/daily?${params}`);
+      if (!response.ok) throw new Error(`주간 예보를 불러오지 못했습니다. (${response.status})`);
+      const data = await response.json() as { daily: DailyForecast[] };
+      if (requestId === dailyForecastRequestId.current) setDailyForecast(data.daily);
     } catch (error) {
-      setRecommendationError(formatError(error, "추천을 불러오지 못했습니다."));
+      if (requestId === dailyForecastRequestId.current) setDailyForecastError(formatError(error, "날짜별 예보를 불러오지 못했습니다."));
+      throw error;
     } finally {
-      setBusy(false);
+      if (requestId === dailyForecastRequestId.current) setDailyForecastLoading(false);
     }
   }
 
-  async function loadHourlyRecommendations() {
+  function refreshDailyForecast() {
+    void loadDailyForecast(location).catch(() => undefined);
+  }
+
+  async function loadHourlyRecommendations(plan: ActivityPlan = activityPlan) {
+    const requestId = ++analysisRequestId.current;
     setBusy(true);
     setRecommendationError(null);
     try {
-      const startHour = new Date().getHours();
-      const hours = Array.from({ length: Math.min(6, 24 - startHour) }, (_, index) => startHour + index);
-      const entries = await Promise.all(hours.map(async (hour) => [hour, await requestRecommendation(hour)] as const));
-      setHourlyRecommendations(Object.fromEntries(entries));
+      const hours = Array.from({ length: plan.durationHours }, (_, index) => plan.startHourIndex + index);
+      const entries = await requestHourlyBatch(hours, location, plan);
+      if (requestId === analysisRequestId.current) setHourlyRecommendations(Object.fromEntries(entries));
     } catch (error) {
-      setRecommendationError(formatError(error, "시간별 분석을 불러오지 못했습니다."));
+      if (requestId === analysisRequestId.current) setRecommendationError(formatError(error, "시간별 분석을 불러오지 못했습니다."));
     } finally {
-      setBusy(false);
+      if (requestId === analysisRequestId.current) setBusy(false);
     }
+  }
+
+  function applyActivityPlan(nextPlan: ActivityPlan) {
+    activityPlanCustomized.current = true;
+    setActivityPlan(nextPlan);
+    void loadHourlyRecommendations(nextPlan);
   }
 
   async function loadDashboard(targetLocation: SelectedLocation = location) {
+    const requestId = ++analysisRequestId.current;
+    const isLatestRequest = () => requestId === analysisRequestId.current;
     setBusy(true);
     setRecommendationError(null);
+    setDailyForecast([]);
     try {
-      const startHour = new Date().getHours();
-      const hours = Array.from({ length: Math.min(6, 24 - startHour) }, (_, index) => startHour + index);
-      // Fetch the current result first. This warms the per-location weather
-      // cache before the six hourly reads, preventing duplicate provider calls.
+      // Show weather-only information first. It is useful without any profile
+      // data and warms the shared forecast cache for the personal analysis.
+      try {
+        await loadDailyForecast(targetLocation);
+      } catch {
+        // The personalized result can still be useful if the optional daily
+        // overview is temporarily unavailable.
+      }
+      if (!isLatestRequest()) return;
+      const hours = getHourlyForecastIndices();
       const current = await requestRecommendation(undefined, targetLocation);
+      if (!isLatestRequest()) return;
       setRecommendation(current);
-      const hourlyResults = await Promise.allSettled(hours.map(async (hour) => [hour, await requestRecommendation(hour, targetLocation)] as const));
-      const entries = hourlyResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      // The main personalized result is ready. Keep the optional six-hour
+      // comparison loading in the background instead of holding the entire
+      // dashboard in its loading state.
+      setBusy(false);
+      // The current result is already available. Fetch the remaining chart
+      // points as one request instead of opening five more browser requests.
+      const remainingHours = hours.slice(1);
+      const hourlyResults = await Promise.allSettled([requestHourlyBatch(remainingHours, targetLocation)]);
+      const batchEntries = hourlyResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+      const entries = [[hours[0], current] as const, ...batchEntries];
+      if (!isLatestRequest()) return;
       setHourlyRecommendations(Object.fromEntries(entries));
       if (entries.length < hours.length) setRecommendationError("현재 분석은 표시했습니다. 일부 시간대 분석은 잠시 후 다시 시도해 주세요.");
     } catch (error) {
-      setRecommendationError(formatError(error, "날씨와 개인화 분석을 불러오지 못했습니다."));
+      if (isLatestRequest()) setRecommendationError(formatError(error, "날씨와 개인화 분석을 불러오지 못했습니다."));
     } finally {
-      setBusy(false);
+      if (isLatestRequest()) setBusy(false);
     }
   }
+
+  loadProfileRef.current = loadProfile;
+  loadDashboardRef.current = loadDashboard;
 
   useEffect(() => {
     if (!authResolved) return;
     if (!session) return;
-    const timer = window.setTimeout(() => { void loadProfile(); }, 0);
+    const timer = window.setTimeout(() => { void loadProfileRef.current?.(); }, 0);
     return () => window.clearTimeout(timer);
-  }, [authResolved, user?.id]);
+  }, [authResolved, session]);
 
   useEffect(() => {
     if (!authResolved || (session && !profileReady) || initialAnalysisStarted.current) return;
     initialAnalysisStarted.current = true;
-    const timer = window.setTimeout(() => { void loadDashboard(); }, 0);
+    const timer = window.setTimeout(() => { void loadDashboardRef.current?.(); }, 0);
     return () => window.clearTimeout(timer);
   }, [authResolved, profileReady, session]);
+
+  useEffect(() => {
+    if (activityPlanCustomized.current) return;
+    setActivityPlan((plan) => ({ ...plan, activity: profile.default_activity, environment: profile.default_environment }));
+  }, [profile.default_activity, profile.default_environment]);
 
   async function loadWardrobe() {
     if (!session) return;
@@ -752,15 +883,15 @@ export default function DashboardPage() {
         </header>
 
         <div className="flex-1 overflow-y-auto px-5 py-5 pb-24">
-          {activeTab === "home" && <HomeExperience location={location} profile={profile} recommendation={recommendation} hourlyRecommendations={hourlyRecommendations} busy={busy} error={recommendationError} feedbackMessage={feedbackMessage} selectedFeedback={selectedFeedback} quickMenuOpen={quickMenuOpen} onLocate={useCurrentLocation} onRefresh={loadDashboard} onOpenLocationPicker={() => { setQuickMenuOpen(false); setLocationPickerOpen(true); }} onToggleQuickMenu={() => setQuickMenuOpen((open) => !open)} onSettings={() => { setQuickMenuOpen(false); setActiveTab("settings"); }} onFeedback={submitFeedback} />}
-          {activeTab === "hourly" && <HourlyTab activity={profile.default_activity} recommendations={hourlyRecommendations} onRefresh={loadHourlyRecommendations} busy={busy} error={recommendationError} />}
+          {activeTab === "home" && <HomeExperience location={location} profile={profile} recommendation={recommendation} hourlyRecommendations={hourlyRecommendations} activityPlan={activityPlan} onApplyActivityPlan={applyActivityPlan} dailyForecast={dailyForecast} dailyForecastLoading={dailyForecastLoading} dailyForecastError={dailyForecastError} onRefreshDailyForecast={refreshDailyForecast} busy={busy} error={recommendationError} feedbackMessage={feedbackMessage} selectedFeedback={selectedFeedback} quickMenuOpen={quickMenuOpen} onLocate={useCurrentLocation} onRefresh={() => { void loadDashboard(); }} onOpenLocationPicker={() => { setQuickMenuOpen(false); setLocationPickerOpen(true); }} onToggleQuickMenu={() => setQuickMenuOpen((open) => !open)} onSettings={() => { setQuickMenuOpen(false); setActiveTab("settings"); }} onFeedback={submitFeedback} />}
+          {activeTab === "hourly" && <HourlyTab location={location} forecastDays={dailyForecast} forecastLoading={dailyForecastLoading} forecastError={dailyForecastError} onRefreshForecast={refreshDailyForecast} activity={profile.default_activity} recommendations={hourlyRecommendations} error={recommendationError} />}
           {activeTab === "clothing" && <ClothingTab user={user} items={wardrobeItems} busy={busy} message={wardrobeMessage} onAdd={addWardrobe} onUpdate={updateWardrobe} onDelete={removeWardrobe} onLogin={() => { setAuthMode("signIn"); setAuthOpen(true); }} />}
           {activeTab === "settings" && <SettingsTab user={user} profile={profile} setProfile={setProfile} busy={busy} message={saveMessage} onLoad={loadProfile} onSave={saveProfile} onLogin={() => { setAuthMode("signIn"); setAuthOpen(true); }} onSignOutLocal={() => void signOut("local")} onSignOutAll={() => void signOut("global")} onEmailChange={updateAccountEmail} onPasswordChange={updateAccountPassword} onGoogleLink={linkGoogleIdentity} onGoogleUnlink={unlinkGoogleIdentity} onExport={downloadDataExport} onFeedbackReset={resetRecommendationFeedback} onDeletionRequest={requestAccountDeletion} onDeletionCancel={cancelAccountDeletion} location={location} savedLocations={savedLocations} onLoadLocations={loadSavedLocations} onSaveLocation={saveCurrentLocation} onSelectLocation={selectLocation} onDeleteLocation={removeSavedLocation} />}
         </div>
 
         <nav className="grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 py-2">
           <TabButton label="홈" active={activeTab === "home"} onClick={() => setActiveTab("home")} icon={<ThermometerSun size={20} />} />
-          <TabButton label="시간별" active={activeTab === "hourly"} onClick={() => setActiveTab("hourly")} icon={<SlidersHorizontal size={20} />} />
+          <TabButton label="상세 예보" active={activeTab === "hourly"} onClick={() => setActiveTab("hourly")} icon={<SlidersHorizontal size={20} />} />
           <TabButton label="내 옷장" active={activeTab === "clothing"} onClick={() => { setActiveTab("clothing"); void loadWardrobe(); }} icon={<Shirt size={20} />} />
           <TabButton label="설정" active={activeTab === "settings"} onClick={() => setActiveTab("settings")} icon={<Settings size={20} />} />
         </nav>
@@ -781,8 +912,8 @@ function activityScore(item: Recommendation, activity: Activity) {
   return item.suitability?.find((score) => score.name.includes(key))?.score ?? Math.max(0, 100 - Math.abs(item.utci_personalized - 22) * 6);
 }
 
-function HomeExperience({ location, profile, recommendation, hourlyRecommendations, busy, error, feedbackMessage, selectedFeedback, quickMenuOpen, onLocate, onRefresh, onOpenLocationPicker, onToggleQuickMenu, onSettings, onFeedback }: { location: SelectedLocation; profile: UserProfile; recommendation: Recommendation | null; hourlyRecommendations: Record<number, Recommendation>; busy: boolean; error: string | null; feedbackMessage: string | null; selectedFeedback: "too_hot" | "comfortable" | "too_cold" | null; quickMenuOpen: boolean; onLocate: () => void; onRefresh: () => void; onOpenLocationPicker: () => void; onToggleQuickMenu: () => void; onSettings: () => void; onFeedback: (feedbackType: "too_hot" | "comfortable" | "too_cold") => void }) {
-  const chartData = useMemo(() => Object.entries(hourlyRecommendations).map(([hour, item]) => ({ hour: `${String(hour).padStart(2, "0")}시`, 체감: Math.round(item.utci_personalized), 활동점수: Math.round(activityScore(item, profile.default_activity)) })), [hourlyRecommendations, profile.default_activity]);
+function HomeExperience({ location, profile, recommendation, hourlyRecommendations, activityPlan, onApplyActivityPlan, dailyForecast, dailyForecastLoading, dailyForecastError, onRefreshDailyForecast, busy, error, feedbackMessage, selectedFeedback, quickMenuOpen, onLocate, onRefresh, onOpenLocationPicker, onToggleQuickMenu, onSettings, onFeedback }: { location: SelectedLocation; profile: UserProfile; recommendation: Recommendation | null; hourlyRecommendations: Record<number, Recommendation>; activityPlan: ActivityPlan; onApplyActivityPlan: (plan: ActivityPlan) => void; dailyForecast: DailyForecast[]; dailyForecastLoading: boolean; dailyForecastError: string | null; onRefreshDailyForecast: () => void; busy: boolean; error: string | null; feedbackMessage: string | null; selectedFeedback: "too_hot" | "comfortable" | "too_cold" | null; quickMenuOpen: boolean; onLocate: () => void; onRefresh: () => void; onOpenLocationPicker: () => void; onToggleQuickMenu: () => void; onSettings: () => void; onFeedback: (feedbackType: "too_hot" | "comfortable" | "too_cold") => void }) {
+  const chartData = useMemo(() => Object.entries(hourlyRecommendations).sort(([left], [right]) => Number(left) - Number(right)).map(([hour, item]) => ({ hour: forecastChartLabel(Number(hour)), 체감: Math.round(item.utci_personalized), 활동점수: Math.round(activityScore(item, activityPlan.activity)) })), [hourlyRecommendations, activityPlan.activity]);
   const weather = recommendation?.weather;
   const comfort = recommendation ? Math.max(8, Math.min(92, 50 + (22 - recommendation.utci_personalized) * 2.2)) : 50;
   const clothing = recommendation?.recommendations.clothing ?? ["분석을 시작하면 오늘의 착장을 제안합니다."];
@@ -791,19 +922,21 @@ function HomeExperience({ location, profile, recommendation, hourlyRecommendatio
     <div className="relative flex items-center justify-between">
       <button onClick={onOpenLocationPicker} className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-left shadow-sm ring-1 ring-slate-100"><span className="grid h-7 w-7 place-items-center rounded-xl bg-sky-100 text-blue-600"><MapPin size={15} /></span><span><span className="block text-[10px] font-bold text-slate-400">분석 장소</span><span className="block max-w-44 truncate text-sm font-black text-slate-800">{location.label}</span></span><ChevronRight size={16} className="text-slate-400" /></button>
       <button aria-label="빠른 메뉴" onClick={onToggleQuickMenu} className="grid h-10 w-10 place-items-center rounded-2xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-100"><Menu size={19} /></button>
-      {quickMenuOpen && <div className="absolute right-0 top-12 z-20 w-52 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-slate-100"><button onClick={onOpenLocationPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><MapPin size={15} className="text-blue-600" />장소 선택·저장</button><button onClick={onRefresh} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Sparkles size={15} className="text-blue-600" />오늘 분석 업데이트</button><button onClick={onSettings} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Settings size={15} className="text-blue-600" />개인화 설정</button></div>}
+      {quickMenuOpen && <div className="absolute right-0 top-12 z-20 w-52 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-slate-100"><button onClick={onOpenLocationPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><MapPin size={15} className="text-blue-600" />장소 선택·저장</button><button onClick={onRefresh} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Sparkles size={15} className="text-blue-600" />날씨 새로고침</button><button onClick={onSettings} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Settings size={15} className="text-blue-600" />개인화 설정</button></div>}
     </div>
 
     <section className="overflow-hidden rounded-[30px] bg-[linear-gradient(135deg,#0b5fc4,#168fd4_62%,#72c7ee)] p-5 text-white shadow-lg">
       <div className="flex items-start justify-between"><div><p className="text-xs font-bold text-sky-100">{location.label} · 개인화 체감</p><p className="mt-1 text-5xl font-black tracking-tight">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 text-sm font-bold text-white/90">{recommendation?.thermal_sensation ?? "장소와 오늘의 날씨를 분석해 보세요"}</p></div><div className="relative grid h-24 w-24 place-items-center"><svg viewBox="0 0 120 120" className="h-24 w-24 -rotate-90"><circle cx="60" cy="60" r="45" fill="none" stroke="rgba(255,255,255,.22)" strokeWidth="10" /><circle cx="60" cy="60" r="45" fill="none" stroke="#fef08a" strokeWidth="10" strokeLinecap="round" strokeDasharray="283" strokeDashoffset={283 - (283 * comfort) / 100} /></svg><span className="absolute text-center text-[10px] font-black leading-tight">쾌적<br />지수</span></div></div>
       <div className="mt-5 grid grid-cols-3 gap-2 border-t border-white/20 pt-4"><Metric icon={<Droplets size={16} />} label="습도" value={weather ? `${weather.humidity}%` : "--"} /><Metric icon={<Wind size={16} />} label="바람" value={weather ? `${weather.wind_speed}m/s` : "--"} /><Metric icon={<Umbrella size={16} />} label="강수" value={weather ? `${weather.precipitation_probability ?? 0}%` : "--"} /></div>
-      <button disabled={busy} onClick={onRefresh} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-white/15 px-4 py-3 text-xs font-black backdrop-blur disabled:opacity-50"><Sparkles size={15} />{busy ? "개인화 분석 중…" : "이 장소의 오늘 분석하기"}</button>
+      <button disabled={busy} onClick={onRefresh} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-white/15 px-4 py-3 text-xs font-black backdrop-blur disabled:opacity-50"><Sparkles size={15} />{busy ? "개인화 분석 중…" : "최신 날씨로 새로고침"}</button>
     </section>
 
     {error && <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">{error}</p>}
 
-    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">시간에 따른 체감 변화</p><h2 className="mt-1 font-black text-slate-900">언제 움직이면 좋을까요?</h2></div><span className="rounded-xl bg-sky-50 p-2 text-blue-600"><ActivityIcon size={18} /></span></div>{chartData.length ? <div className="mt-4 h-44"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}><defs><linearGradient id="thermalArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.42} /><stop offset="100%" stopColor="#0ea5e9" stopOpacity={0.02} /></linearGradient></defs><CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" /><XAxis dataKey="hour" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#64748b" }} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#64748b" }} /><Tooltip contentStyle={{ borderRadius: 14, border: "none", boxShadow: "0 8px 24px rgba(15,23,42,.12)", fontSize: 12 }} /><Area type="monotone" dataKey="체감" stroke="#0284c7" strokeWidth={3} fill="url(#thermalArea)" /><Line type="monotone" dataKey="활동점수" stroke="#22c55e" strokeWidth={2} dot={false} /></AreaChart></ResponsiveContainer></div> : <div className="mt-4 flex h-32 flex-col items-center justify-center rounded-2xl bg-slate-50 text-center"><CalendarDays className="text-slate-300" /><p className="mt-2 text-xs font-bold text-slate-500">장소 분석 후 6시간 흐름을 보여드립니다.</p></div>}<div className="mt-2 flex items-center gap-4 text-[10px] font-bold text-slate-500"><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-sky-600" />개인화 체감</span><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-green-500" />활동 적합도</span></div></section>
+    <ActivityPlanControls key={`${activityPlan.activity}-${activityPlan.environment}-${activityPlan.startHourIndex}-${activityPlan.durationHours}`} plan={activityPlan} onApply={onApplyActivityPlan} />
+    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">시간에 따른 체감 변화</p><h2 className="mt-1 font-black text-slate-900">언제 움직이면 좋을까요?</h2></div><span className="rounded-xl bg-sky-50 p-2 text-blue-600"><ActivityIcon size={18} /></span></div>{chartData.length ? <div className="mt-4 h-44"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 8, right: 4, left: -24, bottom: 0 }}><defs><linearGradient id="thermalArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.42} /><stop offset="100%" stopColor="#0ea5e9" stopOpacity={0.02} /></linearGradient></defs><CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" /><XAxis dataKey="hour" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#64748b" }} /><YAxis yAxisId="temperature" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#0284c7" }} tickFormatter={(value) => `${value}°`} /><YAxis yAxisId="score" orientation="right" domain={[0, 100]} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "#16a34a" }} tickFormatter={(value) => `${value}점`} /><Tooltip contentStyle={{ borderRadius: 14, border: "none", boxShadow: "0 8px 24px rgba(15,23,42,.12)", fontSize: 12 }} /><Area yAxisId="temperature" type="monotone" isAnimationActive={false} dataKey="체감" stroke="#0284c7" strokeWidth={3} fill="url(#thermalArea)" /><Line yAxisId="score" type="monotone" isAnimationActive={false} dataKey="활동점수" stroke="#22c55e" strokeWidth={2} dot={false} /></AreaChart></ResponsiveContainer></div> : <div className="mt-4 flex h-32 flex-col items-center justify-center rounded-2xl bg-slate-50 text-center"><CalendarDays className="text-slate-300" /><p className="mt-2 text-xs font-bold text-slate-500">장소 분석 후 6시간 흐름을 보여드립니다.</p></div>}<div className="mt-2 flex items-center gap-4 text-[10px] font-bold text-slate-500"><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-sky-600" />개인화 체감</span><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-green-500" />활동 적합도</span></div></section>
 
+    <DailyForecastSection items={dailyForecast} loading={dailyForecastLoading} error={dailyForecastError} onRetry={onRefreshDailyForecast} />
     <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-2xl bg-indigo-50 text-indigo-600"><Shirt size={20} /></span><div><p className="text-xs font-black text-indigo-600">오늘의 착장</p><h2 className="font-black">{activityLabels[profile.default_activity]}에 맞춘 레이어</h2></div></div><div className="mt-4 flex flex-wrap gap-2">{clothing.map((item) => <span key={item} className="rounded-full bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700">{item}</span>)}</div>{recommendation?.nudge?.nudge_warning && <p className="mt-3 rounded-2xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{recommendation.nudge.nudge_message}</p>}{recommendation && <div className="mt-4 border-t border-slate-100 pt-3"><div className="flex items-center justify-between"><p className="text-xs font-bold text-slate-500">이 추천의 실제 느낌은?</p><div className="flex gap-1"><button disabled={busy} onClick={() => onFeedback("too_cold")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "too_cold" ? "bg-sky-600 text-white" : "bg-sky-50 text-sky-700"}`}>추움</button><button disabled={busy} onClick={() => onFeedback("comfortable")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "comfortable" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700"}`}>좋음</button><button disabled={busy} onClick={() => onFeedback("too_hot")} className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${selectedFeedback === "too_hot" ? "bg-rose-600 text-white" : "bg-rose-50 text-rose-700"}`}>더움</button></div></div>{feedbackMessage && <p className={`mt-3 rounded-xl p-3 text-xs font-bold ${feedbackMessage.startsWith("저장됨") ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{feedbackMessage}</p>}{recommendation.personalization && <p className="mt-2 text-[11px] text-slate-500">누적 체감 보정 {recommendation.personalization.feedback_warmth_bias > 0 ? "+" : ""}{recommendation.personalization.feedback_warmth_bias.toFixed(1)} · 옷장 {recommendation.personalization.wardrobe_items_used}개 반영</p>}</div>}</section>
     <button onClick={onLocate} className="flex w-full items-center justify-center gap-2 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs font-bold text-blue-700"><Navigation size={15} />내 현재 위치로 분석</button>
   </div>;
@@ -819,39 +952,92 @@ function LocationPicker({ current, savedLocations, catalog, onClose, onLocate, o
   return <div className="fixed inset-0 z-50 flex items-end bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5"><div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[30px] bg-[#f7faff] p-5 shadow-2xl sm:rounded-[30px]"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">WEATHER LOCATION</p><h2 className="mt-1 text-xl font-black">어디의 날씨를 분석할까요?</h2><p className="mt-1 text-xs text-slate-500">선택한 장소의 기후와 내 프로필을 함께 반영합니다.</p></div><button aria-label="닫기" onClick={onClose} className="rounded-full bg-slate-100 p-2 text-slate-600"><X size={18} /></button></div><div className="mt-5 flex gap-2"><button onClick={onLocate} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-blue-600 p-3 text-xs font-black text-white"><Navigation size={15} />현재 위치</button><button onClick={onSaveCurrent} className="flex items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white px-4 text-xs font-bold text-blue-700"><Plus size={15} />저장</button></div><div className="mt-4 flex items-center gap-2 rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-100"><Search size={17} className="text-slate-400" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="지역명으로 찾기 (예: 강남, 수원)" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400" /></div><div className="mt-5"><div className="flex items-center justify-between"><h3 className="text-xs font-black text-slate-500">현재 선택</h3><span className="text-[11px] text-slate-400">{current.latitude.toFixed(3)}, {current.longitude.toFixed(3)}</span></div><div className="mt-2 flex items-center gap-3 rounded-2xl bg-sky-100 p-3 text-blue-900"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-blue-600"><MapPin size={18} /></span><p className="text-sm font-black">{current.label}</p><Check size={17} className="ml-auto text-blue-600" /></div></div>{savedLocations.length > 0 && <div className="mt-5"><h3 className="text-xs font-black text-slate-500">저장한 장소</h3><div className="mt-2 grid gap-2">{savedLocations.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />)}</div></div>}<div className="mt-5"><h3 className="text-xs font-black text-slate-500">분석 가능한 지역</h3><div className="mt-2 grid gap-2">{filtered.length ? filtered.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />) : <p className="rounded-2xl bg-white p-4 text-center text-xs text-slate-500">검색 결과가 없습니다.</p>}</div></div></div></div>;
 }
 
+function ActivityPlanControls({ plan, onApply }: { plan: ActivityPlan; onApply: (plan: ActivityPlan) => void }) {
+  const [draft, setDraft] = useState(plan);
+  const startOptions = Array.from({ length: 24 }, (_, index) => new Date().getHours() + index);
+  const endHour = draft.startHourIndex + draft.durationHours - 1;
+
+  return <section className="rounded-3xl bg-white p-4 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">활동 계획</p><h2 className="mt-1 font-black text-slate-900">언제, 어떤 활동을 할까요?</h2></div><ActivityIcon className="text-blue-600" size={20} /></div><p className="mt-2 text-xs text-slate-500">이 시간대만 개인화 체감과 활동 적합도를 계산합니다.</p><div className="mt-4 grid grid-cols-2 gap-2"><label className="text-xs font-bold text-slate-600">활동<select value={draft.activity} onChange={(event) => setDraft((current) => ({ ...current, activity: event.target.value as Activity }))} className="mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-800">{Object.entries(activityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-xs font-bold text-slate-600">환경<select value={draft.environment} onChange={(event) => setDraft((current) => ({ ...current, environment: event.target.value as Environment }))} className="mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-800">{Object.entries(environmentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-xs font-bold text-slate-600">시작<select value={draft.startHourIndex} onChange={(event) => setDraft((current) => ({ ...current, startHourIndex: Number(event.target.value) }))} className="mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-800">{startOptions.map((hour) => <option key={hour} value={hour}>{forecastChartLabel(hour)}</option>)}</select></label><label className="text-xs font-bold text-slate-600">기간<select value={draft.durationHours} onChange={(event) => setDraft((current) => ({ ...current, durationHours: Number(event.target.value) }))} className="mt-1 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-800">{[1, 2, 3, 4, 6].map((hours) => <option key={hours} value={hours}>{hours}시간</option>)}</select></label></div><div className="mt-3 flex items-center justify-between rounded-xl bg-sky-50 px-3 py-2"><p className="text-xs font-bold text-blue-800">{forecastChartLabel(draft.startHourIndex)} ~ {forecastChartLabel(endHour)}</p><button onClick={() => onApply(draft)} className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-black text-white">계획 적용</button></div></section>;
+}
+
+function DailyForecastSection({ items, loading, error, onRetry }: { items: DailyForecast[]; loading: boolean; error: string | null; onRetry: () => void }) {
+  const dayLabel = (date: string, index: number) => {
+    if (index === 0) return "오늘";
+    if (index === 1) return "내일";
+    const parsed = new Date(`${date}T00:00:00`);
+    return new Intl.DateTimeFormat("ko-KR", { weekday: "short" }).format(parsed);
+  };
+
+  return <section className="rounded-3xl bg-white p-5 shadow-sm">
+    <div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">7일 날씨</p><h2 className="mt-1 font-black text-slate-900">날짜별 예보</h2></div><CloudSun className="text-sky-500" size={21} /></div>
+    {items.length ? <div className="mt-4 flex gap-2 overflow-x-auto pb-1">{items.map((item, index) => <article key={item.date} className="min-w-28 flex-1 rounded-2xl bg-sky-50 p-3 text-center"><p className="text-xs font-black text-slate-800">{dayLabel(item.date, index)}</p><p className="mt-1 text-[10px] text-slate-500">{item.date.slice(5).replace("-", ".")}</p><p className="mt-3 text-sm font-black text-slate-900"><span className="text-sky-600">{Math.round(item.temperature_min)}°</span> <span className="text-slate-400">/</span> <span className="text-rose-500">{Math.round(item.temperature_max)}°</span></p><div className="mt-3 space-y-1 text-[10px] font-bold text-slate-600"><p>강수 {item.precipitation_probability_max}%</p><p>평균 습도 {item.humidity_avg ?? "-"}%</p></div></article>)}</div> : <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-center text-xs font-bold text-slate-500">{loading ? "날짜별 예보를 준비하고 있습니다." : error ? <><p>{error}</p><button onClick={onRetry} className="mt-3 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white">다시 시도</button></> : "날짜별 예보가 없습니다."}</div>}
+    <p className="mt-3 text-[10px] text-slate-400">최저/최고기온 · 일 최대 강수확률 · 평균 습도</p>
+  </section>;
+}
+
 function LocationRow({ item, onSelect }: { item: LocationOption | SavedLocation; onSelect: (location: LocationOption | SavedLocation) => void }) {
   return <button onClick={() => onSelect(item)} className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:ring-blue-200"><span className="grid h-9 w-9 place-items-center rounded-xl bg-slate-100 text-slate-600"><MapPin size={17} /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-slate-800">{item.name}</span><span className="mt-0.5 block text-[11px] text-slate-500">{item.latitude.toFixed(3)}, {item.longitude.toFixed(3)}</span></span><ChevronRight size={16} className="text-slate-400" /></button>;
 }
 
-function HomeTab({ location, profile, recommendation, busy, error, onLocate, onRefresh, onSettings, onFeedback }: { location: { label: string }; profile: UserProfile; recommendation: Recommendation | null; busy: boolean; error: string | null; onLocate: () => void; onRefresh: () => void; onSettings: () => void; onFeedback: (feedbackType: "too_hot" | "comfortable" | "too_cold") => void }) {
-  const clothing = recommendation?.recommendations.clothing ?? ["날씨를 불러오면 맞춤 착장을 제안합니다."];
-  return <div className="space-y-4">
-    <div className="flex items-center justify-between"><button onClick={onLocate} className="flex items-center gap-1 rounded-full bg-white px-3 py-2 text-xs font-bold shadow-sm"><MapPin size={14} className="text-blue-600" />{location.label}</button><button onClick={onSettings} className="rounded-full bg-white p-2 shadow-sm"><Menu size={16} /></button></div>
-    <section className="rounded-[28px] bg-[linear-gradient(135deg,#1b8bd6,#2a4cb4)] p-5 text-white shadow-lg"><div className="flex items-start justify-between"><div><p className="text-sm text-sky-100">오늘의 체감</p><p className="mt-1 text-5xl font-black">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 text-sm font-bold">{recommendation?.thermal_sensation ?? "날씨를 업데이트해 주세요"}</p></div><CloudSun size={62} className="text-sky-200" /></div><button disabled={busy} onClick={onRefresh} className="mt-5 rounded-xl bg-white/15 px-3 py-2 text-xs font-bold disabled:opacity-50">{busy ? "날씨 분석 중…" : "현재 날씨로 추천받기"}</button></section>
-    {error && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{error}</p>}
-    <section className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center gap-2"><Shirt className="text-blue-600" /><div><h1 className="font-black">오늘의 착장</h1><p className="text-xs text-slate-500">{activityLabels[profile.default_activity]} · {environmentLabels[profile.default_environment]}</p></div></div><ul className="mt-4 space-y-2">{clothing.map((item) => <li key={item} className="rounded-xl bg-sky-50 px-3 py-2 text-sm font-semibold text-slate-700">{item}</li>)}</ul>{recommendation?.nudge?.nudge_warning && <p className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{recommendation.nudge.nudge_message}</p>}{recommendation && <div className="mt-4 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">추천 착용감은 어땠나요?</p><div className="mt-2 grid grid-cols-3 gap-2"><button onClick={() => onFeedback("too_cold")} className="rounded-lg bg-sky-50 px-2 py-2 text-xs font-bold text-sky-700">추웠어요</button><button onClick={() => onFeedback("comfortable")} className="rounded-lg bg-emerald-50 px-2 py-2 text-xs font-bold text-emerald-700">좋았어요</button><button onClick={() => onFeedback("too_hot")} className="rounded-lg bg-rose-50 px-2 py-2 text-xs font-bold text-rose-700">더웠어요</button></div></div>}</section>
-    <section className="grid grid-cols-3 gap-2">{[[Droplets, recommendation?.weather?.humidity ? `${recommendation.weather.humidity}%` : "습도"], [Wind, recommendation?.weather?.wind_speed ? `${recommendation.weather.wind_speed}m/s` : "바람"], [Umbrella, "강수 확인"]].map(([Icon, label]) => { const MetricIcon = Icon as typeof Droplets; return <div key={String(label)} className="rounded-2xl bg-white p-3 text-center shadow-sm"><MetricIcon className="mx-auto text-blue-500" size={18} /><p className="mt-1 text-[11px] font-bold text-slate-600">{label as string}</p></div>; })}</section>
-  </div>;
-}
+function HourlyTab({ location, forecastDays, forecastLoading, forecastError, onRefreshForecast, activity, recommendations, error }: { location: SelectedLocation; forecastDays: DailyForecast[]; forecastLoading: boolean; forecastError: string | null; onRefreshForecast: () => void; activity: Activity; recommendations: Record<number, Recommendation>; error: string | null }) {
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [hourlyWeather, setHourlyWeather] = useState<HourlyForecast[]>([]);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const selectedDateIsAvailable = selectedDate !== null && forecastDays.some((day) => day.date === selectedDate);
+  const activeDate = selectedDateIsAvailable ? selectedDate : forecastDays[0]?.date ?? null;
 
-function HourlyTab({ activity, recommendations, onRefresh, busy, error }: { activity: Activity; recommendations: Record<number, Recommendation>; onRefresh: () => void; busy: boolean; error: string | null }) {
-  const now = new Date();
-  const hours = Array.from({ length: Math.min(6, 24 - now.getHours()) }, (_, index) => now.getHours() + index);
-  const scoreForActivity = (item: Recommendation) => {
-    const key = activity === "running" ? "러닝" : activity === "cycling" ? "라이딩" : "산책";
-    return item.suitability?.find((score) => score.name.includes(key))?.score ?? Math.max(0, 100 - Math.abs(item.utci_personalized - 22) * 6);
-  };
-  const available = hours.map((hour) => recommendations[hour]).filter((item): item is Recommendation => Boolean(item));
-  const best = available.reduce<Recommendation | null>((current, item) => !current || scoreForActivity(item) > scoreForActivity(current) ? item : current, null);
-  const bestHour = best ? hours.find((hour) => recommendations[hour] === best) : undefined;
+  useEffect(() => {
+    if (!activeDate) return;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function loadHourlyWeather() {
+      setLoadingDetail(true);
+      setDetailError(null);
+      const params = new URLSearchParams({ latitude: String(location.latitude), longitude: String(location.longitude), date: activeDate });
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/weather/hourly?${params}`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`상세 예보를 불러오지 못했습니다. (${response.status})`);
+        const data = await response.json() as { hourly: HourlyForecast[] };
+        if (!cancelled) setHourlyWeather(data.hourly);
+      } catch (fetchError) {
+        if (!cancelled && !(fetchError instanceof DOMException && fetchError.name === "AbortError")) {
+          setDetailError(formatError(fetchError, "상세 예보를 불러오지 못했습니다."));
+        }
+      } finally {
+        if (!cancelled) setLoadingDetail(false);
+      }
+    }
+
+    void loadHourlyWeather();
+    return () => { cancelled = true; controller.abort(); };
+  }, [activeDate, location.latitude, location.longitude]);
+
+  const dayLabel = (date: string, index: number) => index === 0 ? "오늘" : index === 1 ? "내일" : new Intl.DateTimeFormat("ko-KR", { weekday: "short" }).format(new Date(`${date}T00:00:00`));
+  const activityName = activityLabels[activity];
+  const activityKey = activity === "running" ? "러닝" : activity === "cycling" ? "라이딩" : "산책";
+  const actionSummary = (hour: HourlyForecast) => hour.precipitation_probability >= 60 ? "우산 챙기기" : (hour.wind_speed ?? 0) >= 8 ? "강한 바람 주의" : hour.apparent_temperature >= 28 ? "수분 보충하기" : hour.apparent_temperature <= 5 ? "따뜻하게 입기" : "야외 활동 무난";
+  const initialHours = Object.keys(recommendations).map(Number).sort((left, right) => left - right);
+  const bestScore = initialHours.map((hour) => recommendations[hour]?.suitability?.find((score) => score.name.includes(activityKey))?.score ?? 0).reduce((best, score) => Math.max(best, score), 0);
+
   return <div className="space-y-4">
     <section className="rounded-[28px] bg-[linear-gradient(135deg,#1b8bd6,#2a4cb4)] p-5 text-white shadow-lg">
-      <p className="text-sm font-bold text-sky-100">활동 계획</p><h1 className="mt-1 text-2xl font-black">언제 활동하면 좋을까요?</h1><p className="mt-2 text-sm text-sky-100">{activityLabels[activity]} 기준으로 다음 6시간을 비교했어요.</p>
-      <div className="mt-5 flex items-end justify-between rounded-2xl bg-white/10 px-4 py-3"><div><p className="text-[11px] font-bold text-sky-100">가장 편안한 시간</p><p className="mt-1 text-xl font-black">{bestHour === undefined ? "분석 중" : `${String(bestHour).padStart(2, "0")}:00`}</p></div><p className="text-sm font-bold">{best ? `${Math.round(scoreForActivity(best))}점` : "--"}</p></div>
+      <p className="text-sm font-bold text-sky-100">상세 예보</p><h1 className="mt-1 text-2xl font-black">언제 나갈지 계획해 보세요</h1><p className="mt-2 text-sm text-sky-100">날짜를 고르면 시간별 기온, 체감, 비, 습도와 바람을 확인할 수 있어요.</p>
+      <div className="mt-4 rounded-2xl bg-white/10 px-4 py-3 text-xs font-bold text-sky-50">현재 {activityName} 기준 다음 시간대 활동 적합도 최고 {bestScore || "--"}점</div>
     </section>
-    <button onClick={onRefresh} disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 p-4 text-sm font-bold text-white shadow-sm disabled:opacity-50"><Sparkles size={16} />{busy ? "시간별 분석 중…" : "오늘 시간대 다시 분석"}</button>
+    <section className="rounded-3xl bg-white p-4 shadow-sm">
+      <p className="px-1 text-xs font-black text-slate-600">날짜 선택</p>
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">{forecastDays.map((day, index) => <button key={day.date} onClick={() => setSelectedDate(day.date)} className={`min-w-20 rounded-2xl px-3 py-2 text-center text-xs font-bold ${activeDate === day.date ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600"}`}><span className="block">{dayLabel(day.date, index)}</span><span className="mt-1 block text-[10px] opacity-80">{day.date.slice(5).replace("-", ".")}</span></button>)}</div>
+      {!forecastDays.length && <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-xs font-bold text-slate-600"><p>{forecastLoading ? "날짜별 예보를 준비하고 있습니다." : forecastError ?? "날짜별 예보가 없습니다."}</p>{!forecastLoading && <button onClick={onRefreshForecast} className="mt-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-black text-white">예보 다시 불러오기</button>}</div>}
+    </section>
     {error && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{error}</p>}
-    <section className="rounded-3xl bg-white p-3 shadow-sm"><p className="px-2 pb-2 pt-1 text-xs font-bold text-slate-500">시간대별 활동 적합도</p><div className="space-y-2">{hours.map((hour) => { const item = recommendations[hour]; const score = item ? scoreForActivity(item) : 0; return <div key={hour} className="rounded-2xl bg-slate-50 p-3"><div className="flex items-center gap-3"><p className="w-12 text-sm font-black text-slate-800">{`${String(hour).padStart(2, "0")}:00`}</p><div className="h-2 flex-1 overflow-hidden rounded-full bg-white"><div className={`h-full rounded-full ${score >= 75 ? "bg-emerald-500" : score >= 50 ? "bg-amber-400" : "bg-rose-500"}`} style={{ width: `${score}%` }} /></div><p className="w-12 text-right text-xs font-black text-slate-600">{item ? `${Math.round(score)}점` : "--"}</p></div>{item && <p className="mt-2 text-xs text-slate-500">체감 {Math.round(item.utci_personalized)}° · 강수 {item.weather?.precipitation_probability ?? 0}% · {item.thermal_sensation}</p>}</div>; })}</div></section>
+    {detailError && <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{detailError}</p>}
+    <section className="rounded-3xl bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between px-1"><div><p className="text-xs font-black text-blue-600">시간별 조건</p><h2 className="mt-1 font-black text-slate-900">{activeDate ?? "날짜 선택"}</h2></div></div>
+      {loadingDetail ? <div className="mt-4 rounded-2xl bg-slate-50 p-6 text-center text-xs font-bold text-slate-500">시간별 예보를 준비하고 있습니다.</div> : <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">{hourlyWeather.map((hour) => <article key={hour.time} className="rounded-2xl bg-slate-50 p-3"><div className="flex items-start justify-between"><p className="text-sm font-black text-slate-800">{hour.time.slice(11, 16)}</p><span className={`rounded-full px-2 py-1 text-[10px] font-black ${hour.precipitation_probability >= 50 ? "bg-blue-100 text-blue-700" : "bg-white text-slate-500"}`}>비 {Math.round(hour.precipitation_probability)}%</span></div><p className="mt-3 text-2xl font-black text-slate-900">{Math.round(hour.temperature)}°</p><p className="mt-1 text-[11px] font-bold text-sky-700">체감 {Math.round(hour.apparent_temperature)}°</p><p className="mt-2 rounded-lg bg-white px-2 py-1 text-[10px] font-black text-blue-700">{actionSummary(hour)}</p><div className="mt-3 space-y-1 border-t border-slate-200 pt-2 text-[10px] font-bold text-slate-600"><p>습도 {hour.humidity ?? "-"}%</p><p>바람 {hour.wind_speed ?? "-"}m/s</p><p>야외 체감 {hour.utci === null ? "-" : `${Math.round(hour.utci)}°`}</p></div></article>)}</div>}
+      {!loadingDetail && !hourlyWeather.length && !detailError && <div className="mt-4 rounded-2xl bg-slate-50 p-6 text-center text-xs font-bold text-slate-500">선택한 날짜의 시간별 예보가 없습니다.</div>}
+    </section>
   </div>;
 }
 
