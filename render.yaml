@@ -1,6 +1,7 @@
 services:
   - type: web
     name: pcrs-api-beta
+    plan: free
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
