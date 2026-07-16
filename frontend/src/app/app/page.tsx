@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { createClient, Session, User } from "@supabase/supabase-js";
 import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -861,7 +862,6 @@ function HomeExperience({ location, profile, recommendation, hourlyRecommendatio
   const chartData = useMemo(() => Object.entries(hourlyRecommendations).sort(([left], [right]) => Number(left) - Number(right)).map(([hour, item]) => ({ hour: forecastChartLabel(Number(hour)), 체감: Math.round(item.utci_personalized), 활동점수: Math.round(activityScore(item, activityPlan.activity)) })), [hourlyRecommendations, activityPlan.activity]);
   const [activityPlanEditing, setActivityPlanEditing] = useState(false);
   const weather = recommendation?.weather;
-  const comfort = recommendation ? Math.max(8, Math.min(92, 50 + (22 - recommendation.utci_personalized) * 2.2)) : 50;
   const clothing = recommendation?.recommendations.clothing ?? ["분석을 시작하면 오늘의 착장을 제안합니다."];
   const activityPlanEndHour = activityPlan.startHourIndex + activityPlan.durationHours - 1;
   const activityPlanSummary = `${activityLabels[activityPlan.activity]} · ${environmentLabels[activityPlan.environment]} · ${forecastChartLabel(activityPlan.startHourIndex)} 시작 · ${activityPlan.durationHours}시간`;
@@ -873,8 +873,9 @@ function HomeExperience({ location, profile, recommendation, hourlyRecommendatio
       {quickMenuOpen && <div className="absolute right-0 top-12 z-20 w-52 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-slate-100"><button onClick={onOpenLocationPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><MapPin size={15} className="text-blue-600" />장소 선택·저장</button><button onClick={onRefresh} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Sparkles size={15} className="text-blue-600" />날씨 새로고침</button><button onClick={onSettings} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-xs font-bold hover:bg-sky-50"><Settings size={15} className="text-blue-600" />개인화 설정</button></div>}
     </div>
 
-    <section className="overflow-hidden rounded-[30px] bg-[linear-gradient(135deg,#0b5fc4,#168fd4_62%,#72c7ee)] p-5 text-white shadow-lg">
-      <div className="flex items-start justify-between"><div><p className="text-xs font-bold text-sky-100">{location.label} · 개인화 체감</p><p className="mt-1 text-5xl font-black tracking-tight">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 text-sm font-bold text-white/90">{recommendation?.thermal_sensation ?? "장소와 오늘의 날씨를 분석해 보세요"}</p></div><div className="relative grid h-24 w-24 place-items-center"><svg viewBox="0 0 120 120" className="h-24 w-24 -rotate-90"><circle cx="60" cy="60" r="45" fill="none" stroke="rgba(255,255,255,.22)" strokeWidth="10" /><circle cx="60" cy="60" r="45" fill="none" stroke="#fef08a" strokeWidth="10" strokeLinecap="round" strokeDasharray="283" strokeDashoffset={283 - (283 * comfort) / 100} /></svg><span className="absolute text-center text-[10px] font-black leading-tight">쾌적<br />지수</span></div></div>
+    <section className="relative overflow-hidden rounded-[30px] bg-[linear-gradient(135deg,#0b5fc4,#168fd4_62%,#72c7ee)] p-5 text-white shadow-lg">
+      <div className="pointer-events-none absolute -right-9 -top-4 w-48 opacity-100"><Image src="/thermal-guide-home-hero.svg" alt="" width={232} height={176} priority /></div>
+      <div className="relative z-10 flex items-start justify-between"><div><p className="text-xs font-bold text-sky-100">{location.label} · 개인화 체감</p><p className="mt-1 text-5xl font-black tracking-tight">{recommendation ? `${Math.round(recommendation.utci_personalized)}°` : "--°"}</p><p className="mt-2 max-w-44 text-sm font-bold text-white/90">{recommendation?.thermal_sensation ?? "장소와 오늘의 날씨를 분석해 보세요"}</p></div><div className="h-24 w-24 shrink-0" aria-hidden="true" /></div>
       <div className="mt-5 grid grid-cols-3 gap-2 border-t border-white/20 pt-4"><Metric icon={<Droplets size={16} />} label="습도" value={weather ? `${weather.humidity}%` : "--"} /><Metric icon={<Wind size={16} />} label="바람" value={weather ? `${weather.wind_speed}m/s` : "--"} /><Metric icon={<Umbrella size={16} />} label="강수" value={weather ? `${weather.precipitation_probability ?? 0}%` : "--"} /></div>
       <button disabled={busy} onClick={onRefresh} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-white/15 px-4 py-3 text-xs font-black backdrop-blur disabled:opacity-50"><Sparkles size={15} />{busy ? "개인화 분석 중…" : "최신 날씨로 새로고침"}</button>
     </section>

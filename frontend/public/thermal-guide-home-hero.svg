@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 232 176" role="img" aria-labelledby="title desc">
+  <title id="title">Thermal Guide weather and outfit illustration</title>
+  <desc id="desc">A sun, cloud, thermometer, and clothing icon in Thermal Guide colors.</desc>
+  <defs>
+    <linearGradient id="disc" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#dff4ff"/></linearGradient>
+    <linearGradient id="thermo" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#ffb22d"/><stop offset=".52" stop-color="#ff7b37"/><stop offset="1" stop-color="#1d9ee4"/></linearGradient>
+  </defs>
+  <g opacity=".22" fill="#fff"><circle cx="28" cy="35" r="3"/><circle cx="209" cy="23" r="2"/><circle cx="216" cy="134" r="4"/><circle cx="20" cy="148" r="2"/></g>
+  <circle cx="115" cy="87" r="74" fill="url(#disc)" stroke="#eaf8ff" stroke-width="6"/>
+  <g stroke="#173e6b" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="78" cy="64" r="22" fill="#ffd15c" stroke-width="5"/>
+    <path d="M78 29v-9m0 88v-9m35-35h9M43 64h-9m68-25 6-6M54 95l-6 6m54 0 6 6M54 39l-6-6" fill="none" stroke="#f9ad2d" stroke-width="5"/>
+    <path d="M58 94c0-10 8-18 18-18 3-12 13-19 25-19 14 0 25 11 25 25 9 0 16 7 16 16 0 9-7 16-16 16H74c-9 0-16-7-16-16Z" fill="#d8f1ff" stroke-width="5"/>
+    <path d="M123 47h12v63a20 20 0 1 1-12 0Z" fill="#fff" stroke-width="5"/>
+    <path d="M129 66v46" stroke="url(#thermo)" stroke-width="7"/>
+    <circle cx="129" cy="130" r="11" fill="#299fe5" stroke-width="4"/>
+    <path d="M149 70h11m-11 11h8m-8 11h11" fill="none" stroke-width="4"/>
+    <path d="M171 79 181 74l10 5 7-3 8 8-5 8v22h-30V92l-5-8Z" fill="#ffbf68" stroke-width="4"/>
+    <path d="M184 79v35m-13-18h30" fill="none" stroke="#173e6b" stroke-width="3"/>
+  </g>
+</svg>
