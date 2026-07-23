@@ -3,7 +3,12 @@ import datetime
 import os
 import httpx
 from typing import Dict, Any, Optional
-from db_client import get_weather_forecast_cache, upsert_weather_forecast_cache
+from db_client import (
+    coordinate_cache_key,
+    get_coordinate_weather_forecast_cache,
+    normalize_forecast_coordinates,
+    upsert_coordinate_weather_forecast_cache,
+)
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
@@ -144,7 +149,7 @@ async def fetch_air_quality_from_api(lat: float, lon: float) -> Optional[Dict[st
         print(f"❌ Open-Meteo Air Quality Fetch Exception: {e}")
         return None
 
-async def get_weather_forecast_data(location_id: int, lat: float, lon: float) -> Dict[str, Any]:
+async def get_weather_forecast_data(lat: float, lon: float) -> Dict[str, Any]:
     """
     캐싱 메커니즘을 적용한 7일치/24시간 예보 데이터 조회 메인 함수입니다.
     1. 오늘 날짜로 DB 캐시 조회
@@ -153,18 +158,24 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
     """
     today_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
     
+    normalized_lat, normalized_lon = normalize_forecast_coordinates(lat, lon)
+    cache_key = coordinate_cache_key(normalized_lat, normalized_lon)
+
     # 1. DB 캐시 조회
     cache = None
     try:
-        cache = get_weather_forecast_cache(location_id, today_str)
+        cache = get_coordinate_weather_forecast_cache(cache_key, today_str)
     except Exception as e:
         print(f"⚠️ Forecast Cache query failed: {e}")
         
     if is_weather_forecast_cache_fresh(cache):
-        print("🚀 Cache Hit: Using forecast data from Supabase weather_forecast_cache.")
+        print("🚀 Cache Hit: Using coordinate weather forecast cache.")
         return {
             "hourly_data": cache["hourly_data"],
-            "source": "cache"
+            "source": "cache",
+            "cache_key": cache_key,
+            "latitude": normalized_lat,
+            "longitude": normalized_lon,
         }
             
     # 2. Cache Miss: Open-Meteo API 직접 호출
@@ -173,8 +184,8 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
     # cache wait for both network round trips before any recommendation could
     # be returned.
     live_data, air_data = await asyncio.gather(
-        fetch_weather_forecast_from_api(lat, lon),
-        fetch_air_quality_from_api(lat, lon),
+        fetch_weather_forecast_from_api(normalized_lat, normalized_lon),
+        fetch_air_quality_from_api(normalized_lat, normalized_lon),
     )
     
     if live_data:
@@ -192,19 +203,24 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
 
         try:
             # DB 캐시 갱신
-            persisted = upsert_weather_forecast_cache(
-                location_id=location_id,
+            persisted = upsert_coordinate_weather_forecast_cache(
+                cache_key=cache_key,
+                latitude=normalized_lat,
+                longitude=normalized_lon,
                 date_str=today_str,
                 hourly_data=live_data
             )
             if persisted is None:
-                print("ERROR [weather_forecast_cache]: forecast was fetched but was not persisted.")
+                print("ERROR [coordinate_weather_forecast_cache]: forecast was fetched but was not persisted.")
         except Exception as e:
             print(f"⚠️ Failed to cache forecast data: {e}")
             
         return {
             "hourly_data": live_data,
-            "source": "api"
+            "source": "api",
+            "cache_key": cache_key,
+            "latitude": normalized_lat,
+            "longitude": normalized_lon,
         }
         
     # 3. Fallback: API 에러 시 기존 만료 캐시 강제 반환
@@ -212,7 +228,10 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
         print("⚠️ Fallback: Open-Meteo failed. Returning expired cache data.")
         return {
             "hourly_data": cache["hourly_data"],
-            "source": "expired_cache"
+            "source": "expired_cache",
+            "cache_key": cache_key,
+            "latitude": normalized_lat,
+            "longitude": normalized_lon,
         }
         
     # 4. 최종 Fallback (가짜/더미 예보 배열 생성 - 7일(168시간)치)
@@ -232,5 +251,8 @@ async def get_weather_forecast_data(location_id: int, lat: float, lon: float) ->
     }
     return {
         "hourly_data": dummy_hourly,
-        "source": "fallback_mock"
+        "source": "fallback_mock",
+        "cache_key": cache_key,
+        "latitude": normalized_lat,
+        "longitude": normalized_lon,
     }

@@ -114,16 +114,6 @@ interface SavedLocation {
   is_favorite: boolean;
 }
 
-interface LocationOption {
-  id: string;
-  name: string;
-  latitude: number;
-  longitude: number;
-  sido?: string;
-  sigungu?: string;
-  is_favorite?: boolean;
-}
-
 interface SelectedLocation {
   latitude: number;
   longitude: number;
@@ -235,7 +225,6 @@ export default function DashboardPage() {
   const [selectedFeedback, setSelectedFeedback] = useState<"too_hot" | "comfortable" | "too_cold" | null>(null);
   const [wardrobeItems, setWardrobeItems] = useState<WardrobeItem[]>([]);
   const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
-  const [locationCatalog, setLocationCatalog] = useState<LocationOption[]>([]);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [quickMenuOpen, setQuickMenuOpen] = useState(false);
   const [wardrobeMessage, setWardrobeMessage] = useState<string | null>(null);
@@ -260,18 +249,6 @@ export default function DashboardPage() {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    void fetch(`${API_BASE_URL}/api/v1/locations`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error("장소 목록을 불러오지 못했습니다.");
-        return await response.json() as { locations: LocationOption[] };
-      })
-      .then((data) => { if (mounted) setLocationCatalog(data.locations); })
-      .catch((error: unknown) => { if (mounted) setRecommendationError(formatError(error, "장소 목록을 불러오지 못했습니다.")); });
-    return () => { mounted = false; };
   }, []);
 
   async function persistPendingConsents(accessToken: string) {
@@ -608,7 +585,7 @@ export default function DashboardPage() {
     }
   }
 
-  function selectLocation(nextLocation: LocationOption | SavedLocation) {
+  function selectLocation(nextLocation: SavedLocation) {
     const selected: SelectedLocation = {
       latitude: nextLocation.latitude,
       longitude: nextLocation.longitude,
@@ -618,6 +595,13 @@ export default function DashboardPage() {
     setLocationPickerOpen(false);
     setQuickMenuOpen(false);
     void loadDashboard(selected);
+  }
+
+  function selectCoordinates(nextLocation: SelectedLocation) {
+    setLocation(nextLocation);
+    setLocationPickerOpen(false);
+    setQuickMenuOpen(false);
+    void loadDashboard(nextLocation);
   }
 
   async function saveCurrentLocation() {
@@ -857,7 +841,7 @@ export default function DashboardPage() {
       </section>
 
       {authOpen && <AuthModal mode={authMode} email={authEmail} password={authPassword} terms={termsAccepted} privacy={privacyAccepted} marketing={marketingAccepted} busy={busy} message={authMessage} error={authError} onClose={() => setAuthOpen(false)} onModeChange={setAuthMode} onEmailChange={setAuthEmail} onPasswordChange={setAuthPassword} onTermsChange={setTermsAccepted} onPrivacyChange={setPrivacyAccepted} onMarketingChange={setMarketingAccepted} onSubmit={submitAuth} onGoogle={() => void signInWithGoogle()} onReset={() => void sendPasswordReset()} />}
-      {locationPickerOpen && <LocationPicker current={location} savedLocations={savedLocations} catalog={locationCatalog} onClose={() => setLocationPickerOpen(false)} onLocate={useCurrentLocation} onSelect={selectLocation} onSaveCurrent={() => void saveCurrentLocation()} />}
+      {locationPickerOpen && <LocationPicker current={location} savedLocations={savedLocations} onClose={() => setLocationPickerOpen(false)} onLocate={useCurrentLocation} onSelect={selectLocation} onSelectCoordinates={selectCoordinates} onSaveCurrent={() => void saveCurrentLocation()} />}
     </main>
   );
 }
@@ -907,10 +891,23 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   return <div className="rounded-2xl bg-white/12 p-2 text-center"><span className="mx-auto block w-fit text-sky-100">{icon}</span><p className="mt-1 text-[10px] text-sky-100">{label}</p><p className="mt-0.5 text-xs font-black">{value}</p></div>;
 }
 
-function LocationPicker({ current, savedLocations, catalog, onClose, onLocate, onSelect, onSaveCurrent }: { current: SelectedLocation; savedLocations: SavedLocation[]; catalog: LocationOption[]; onClose: () => void; onLocate: () => void; onSelect: (location: LocationOption | SavedLocation) => void; onSaveCurrent: () => void }) {
-  const [query, setQuery] = useState("");
-  const filtered = catalog.filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 30);
-  return <div className="fixed inset-0 z-50 flex items-end bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5"><div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[30px] bg-[#f7faff] p-5 shadow-2xl sm:rounded-[30px]"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">WEATHER LOCATION</p><h2 className="mt-1 text-xl font-black">어디의 날씨를 분석할까요?</h2><p className="mt-1 text-xs text-slate-500">선택한 장소의 기후와 내 프로필을 함께 반영합니다.</p></div><button aria-label="닫기" onClick={onClose} className="rounded-full bg-slate-100 p-2 text-slate-600"><X size={18} /></button></div><div className="mt-5 flex gap-2"><button onClick={onLocate} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-blue-600 p-3 text-xs font-black text-white"><Navigation size={15} />현재 위치</button><button onClick={onSaveCurrent} className="flex items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white px-4 text-xs font-bold text-blue-700"><Plus size={15} />저장</button></div><div className="mt-4 flex items-center gap-2 rounded-2xl bg-white px-3 py-3 ring-1 ring-slate-100"><Search size={17} className="text-slate-400" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="지역명으로 찾기 (예: 강남, 수원)" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400" /></div><div className="mt-5"><div className="flex items-center justify-between"><h3 className="text-xs font-black text-slate-500">현재 선택</h3><span className="text-[11px] text-slate-400">{current.latitude.toFixed(3)}, {current.longitude.toFixed(3)}</span></div><div className="mt-2 flex items-center gap-3 rounded-2xl bg-sky-100 p-3 text-blue-900"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-blue-600"><MapPin size={18} /></span><p className="text-sm font-black">{current.label}</p><Check size={17} className="ml-auto text-blue-600" /></div></div>{savedLocations.length > 0 && <div className="mt-5"><h3 className="text-xs font-black text-slate-500">저장한 장소</h3><div className="mt-2 grid gap-2">{savedLocations.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />)}</div></div>}<div className="mt-5"><h3 className="text-xs font-black text-slate-500">분석 가능한 지역</h3><div className="mt-2 grid gap-2">{filtered.length ? filtered.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />) : <p className="rounded-2xl bg-white p-4 text-center text-xs text-slate-500">검색 결과가 없습니다.</p>}</div></div></div></div>;
+function LocationPicker({ current, savedLocations, onClose, onLocate, onSelect, onSelectCoordinates, onSaveCurrent }: { current: SelectedLocation; savedLocations: SavedLocation[]; onClose: () => void; onLocate: () => void; onSelect: (location: SavedLocation) => void; onSelectCoordinates: (location: SelectedLocation) => void; onSaveCurrent: () => void }) {
+  const [label, setLabel] = useState("");
+  const [latitude, setLatitude] = useState(String(current.latitude));
+  const [longitude, setLongitude] = useState(String(current.longitude));
+  const [coordinateError, setCoordinateError] = useState<string | null>(null);
+
+  function applyCoordinates() {
+    const nextLatitude = Number(latitude);
+    const nextLongitude = Number(longitude);
+    if (!Number.isFinite(nextLatitude) || !Number.isFinite(nextLongitude) || nextLatitude < -90 || nextLatitude > 90 || nextLongitude < -180 || nextLongitude > 180) {
+      setCoordinateError("위도(-90~90)와 경도(-180~180)를 확인해 주세요.");
+      return;
+    }
+    onSelectCoordinates({ latitude: nextLatitude, longitude: nextLongitude, label: label.trim() || `${nextLatitude.toFixed(4)}, ${nextLongitude.toFixed(4)}` });
+  }
+
+  return <div className="fixed inset-0 z-50 flex items-end bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5"><div className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[30px] bg-[#f7faff] p-5 shadow-2xl sm:rounded-[30px]"><div className="flex items-start justify-between"><div><p className="text-xs font-black text-blue-600">WEATHER LOCATION</p><h2 className="mt-1 text-xl font-black">어디의 날씨를 분석할까요?</h2><p className="mt-1 text-xs text-slate-500">현재 위치, 저장한 장소 또는 직접 입력한 좌표를 사용합니다.</p></div><button aria-label="닫기" onClick={onClose} className="rounded-full bg-slate-100 p-2 text-slate-600"><X size={18} /></button></div><div className="mt-5 flex gap-2"><button onClick={onLocate} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-blue-600 p-3 text-xs font-black text-white"><Navigation size={15} />현재 위치</button><button onClick={onSaveCurrent} className="flex items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-white px-4 text-xs font-bold text-blue-700"><Plus size={15} />저장</button></div><div className="mt-5"><div className="flex items-center justify-between"><h3 className="text-xs font-black text-slate-500">현재 선택</h3><span className="text-[11px] text-slate-400">{current.latitude.toFixed(3)}, {current.longitude.toFixed(3)}</span></div><div className="mt-2 flex items-center gap-3 rounded-2xl bg-sky-100 p-3 text-blue-900"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-blue-600"><MapPin size={18} /></span><p className="text-sm font-black">{current.label}</p><Check size={17} className="ml-auto text-blue-600" /></div></div>{savedLocations.length > 0 && <div className="mt-5"><h3 className="text-xs font-black text-slate-500">저장한 장소</h3><div className="mt-2 grid gap-2">{savedLocations.map((item) => <LocationRow key={item.id} item={item} onSelect={onSelect} />)}</div></div>}<div className="mt-5 rounded-2xl bg-white p-4 ring-1 ring-slate-100"><h3 className="text-xs font-black text-slate-700">좌표로 장소 선택</h3><p className="mt-1 text-[11px] text-slate-500">지도 선택 기능은 다음 단계에서 추가합니다. 현재는 좌표를 바로 분석할 수 있습니다.</p><input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="장소 이름 (선택)" className="mt-3 w-full rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-1 ring-slate-100 focus:ring-blue-300" /><div className="mt-2 grid grid-cols-2 gap-2"><input inputMode="decimal" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="위도" className="min-w-0 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-1 ring-slate-100 focus:ring-blue-300" /><input inputMode="decimal" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="경도" className="min-w-0 rounded-xl bg-slate-50 px-3 py-2 text-sm outline-none ring-1 ring-slate-100 focus:ring-blue-300" /></div>{coordinateError && <p className="mt-2 text-[11px] font-bold text-rose-600">{coordinateError}</p>}<button onClick={applyCoordinates} className="mt-3 w-full rounded-xl bg-slate-900 px-3 py-2.5 text-xs font-black text-white">이 좌표로 분석</button></div></div></div>;
 }
 
 function ActivityPlanControls({ plan, onApply }: { plan: ActivityPlan; onApply: (plan: ActivityPlan) => void }) {
@@ -936,7 +933,7 @@ function DailyForecastSection({ items, loading, error, onRetry }: { items: Daily
   </section>;
 }
 
-function LocationRow({ item, onSelect }: { item: LocationOption | SavedLocation; onSelect: (location: LocationOption | SavedLocation) => void }) {
+function LocationRow({ item, onSelect }: { item: SavedLocation; onSelect: (location: SavedLocation) => void }) {
   return <button onClick={() => onSelect(item)} className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:ring-blue-200"><span className="grid h-9 w-9 place-items-center rounded-xl bg-slate-100 text-slate-600"><MapPin size={17} /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-slate-800">{item.name}</span><span className="mt-0.5 block text-[11px] text-slate-500">{item.latitude.toFixed(3)}, {item.longitude.toFixed(3)}</span></span><ChevronRight size={16} className="text-slate-400" /></button>;
 }
 

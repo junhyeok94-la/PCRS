@@ -1,6 +1,5 @@
 import sys
 import os
-import math
 import asyncio
 import datetime
 import json
@@ -28,14 +27,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # Import database and weather clients
 from db_client import (
-    get_location_by_name,
-    get_all_locations,
-    get_all_location_coordinates,
-    get_weather_forecast_cache,
-    upsert_weather_forecast_cache,
-    get_personalized_analysis_cache,
-    upsert_personalized_analysis_cache,
-    invalidate_personalized_analysis_cache_for_user,
+    get_personalized_coordinate_analysis_cache,
+    upsert_personalized_coordinate_analysis_cache,
+    invalidate_personalized_coordinate_analysis_cache_for_user,
     get_phase1_consents,
     get_phase1_profile,
     upsert_phase1_consents,
@@ -57,10 +51,9 @@ from db_client import (
     get_account_deletion_request,
     get_admin_client,
     request_account_deletion,
-    seed_all_locations_into_db
 )
 from auth import AuthenticatedUser, require_authenticated_user
-from weather_client import add_generic_utci, get_weather_forecast_data, fetch_weather_forecast_from_api, is_weather_forecast_cache_fresh
+from weather_client import get_weather_forecast_data
 from utci_pure import calculate_utci_pure as calc_utci_raw
 
 # ─────────────────────────────────────────────
@@ -75,131 +68,6 @@ def get_user_clo_bias_with_fallback(user_id: str) -> float:
     """
     return 0.0
 
-# ─────────────────────────────────────────────
-# 2. Haversine 거리 계산 함수
-# ─────────────────────────────────────────────
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """두 위경도 사이의 거리를 km 단위로 구합니다."""
-    R = 6371.0  # 지구 반지름 (km)
-    d_lat = math.radians(lat2 - lat1)
-    d_lon = math.radians(lon2 - lon1)
-    a = (math.sin(d_lat / 2) ** 2 + 
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * (math.sin(d_lon / 2) ** 2))
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
-# ─────────────────────────────────────────────
-# 3. 정기 배치 스케줄러 (APScheduler) 태스크 정의
-# ─────────────────────────────────────────────
-def run_weather_collect_batch():
-    """
-    3시간 주기 전국 거점 순회 데이터 수집 스케줄러
-    - location_dimension의 모든 거점 순회
-    - Open-Meteo API 호출하여 예보 취득
-    - 24시간 전체 예보에 대해 UTCI 선계산 수행 후 weather_forecast_cache에 적재
-    """
-    print(f"⏰ [Batch] Starting weather collect and UTCI pre-calculation batch task: {datetime.datetime.now()}")
-    locations = get_all_location_coordinates()
-    if not locations:
-        print("⚠️ [Batch] No location coordinates found in location_dimension.")
-        return
-        
-    today_str = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
-    
-    # 동기식 헬퍼 함수로 Open-Meteo 호출
-    import asyncio
-    
-    async def process_location(loc):
-        loc_id = loc["id"]
-        lat = float(loc["latitude"])
-        lon = float(loc["longitude"])
-
-        # Avoid refreshing a valid entry when the process restarts or another
-        # worker has already completed the same scheduled batch.
-        if is_weather_forecast_cache_fresh(get_weather_forecast_cache(loc_id, today_str)):
-            print(f"⏭️ [Batch] Fresh cache exists for {loc['sido']} {loc['sigungu']}; skipping.")
-            return
-        
-        # 1. Open-Meteo API에서 기상 데이터 긁어오기
-        hourly_raw = await fetch_weather_forecast_from_api(lat, lon)
-        if not hourly_raw:
-            print(f"⚠️ [Batch] Failed to fetch weather for {loc['sido']} {loc['sigungu']}")
-            return
-            
-        # 2. 24시간 시간별 기온, 습도, 풍속, 일사량 데이터를 바탕으로 UTCI 선계산
-        temperatures = hourly_raw.get("temperature_2m", [])
-        humidities = hourly_raw.get("relativehumidity_2m", [])
-        wind_speeds = hourly_raw.get("windspeed_10m", [])
-        radiations = hourly_raw.get("shortwave_radiation", [])
-        
-        utci_list = []
-        for i in range(len(temperatures)):
-            tdb = temperatures[i]
-            rh = humidities[i]
-            v10 = wind_speeds[i]
-            solar_rad = radiations[i]
-            
-            # 실외 기준: 10m 풍속 및 일사량 기반 Tmrt 연산
-            # Tmrt = tdb + 0.0014 * shortwave_radiation
-            tmrt = round(tdb + 0.0014 * solar_rad, 1)
-            
-            # UTCI 계산 (최소 풍속 0.5m/s 보정은 calc_utci_raw 내부 처리)
-            try:
-                utci_val = round(calc_utci_raw(tdb=tdb, tr=tmrt, v=v10, rh=rh), 2)
-            except Exception as e:
-                utci_val = round(tdb + (tmrt - tdb) * 0.35 - max(0.0, v10 - 0.5) * 2.0, 2)
-                
-            utci_list.append(utci_val)
-            
-        # 계산 결과 리스트를 JSON 구조에 보존
-        hourly_raw["utci"] = utci_list
-        hourly_raw = add_generic_utci(hourly_raw)
-        
-        # 3. DB 캐시에 Upsert
-        upsert_weather_forecast_cache(
-            location_id=loc_id,
-            date_str=today_str,
-            hourly_data=hourly_raw
-        )
-        
-        # Historical fact staging was retired: the forecast cache is the sole
-        # weather persistence layer used by the product.
-        time_strings = hourly_raw.get("time", [])
-        for idx in ():
-            try:
-                # ISO 시간 문자열 파싱 (예: "2026-07-14T00:00" -> 날짜: "2026-07-14", 시간: 0)
-                t_str = time_strings[idx]
-                date_part, time_part = t_str.split("T")
-                hour_part = int(time_part.split(":")[0])
-                
-                upsert_historical_weather_fact(
-                    location_id=loc_id,
-                    weather_date=date_part,
-                    hour=hour_part,
-                    temp=temperatures[idx],
-                    hum=humidities[idx],
-                    wind=wind_speeds[idx],
-                    solar=radiations[idx],
-                    utci=utci_list[idx]
-                )
-            except Exception as ex:
-                print(f"⚠️ [Batch] Failed to insert historical fact at index {idx} for {loc['sigungu']}: {ex}")
-                
-        print(f"✅ [Batch] Successfully calculated, cached, and staged historical weather facts for {loc['sido']} {loc['sigungu']}")
-
-
-    # 비동기 함수 실행 처리
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    for loc in locations:
-        try:
-            loop.run_until_complete(process_location(loc))
-        except Exception as e:
-            print(f"❌ [Batch] Error processing location {loc.get('sigungu')}: {e}")
-    loop.close()
-    print("⏰ [Batch] Weather collection batch task finished.")
-
-
 def run_account_deletion_batch():
     """Run the irreversible cleanup only after the 30-day recovery window."""
     completed = execute_due_account_deletions()
@@ -207,36 +75,16 @@ def run_account_deletion_batch():
         print(f"🗑️ [Batch] Permanently deleted {completed} expired account(s).")
 
 # ─────────────────────────────────────────────
-# 4. FastAPI 라이프사이클 이벤트 (스케줄러 설정)
+# 2. FastAPI 라이프사이클 이벤트 (스케줄러 설정)
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 스타트업 시 전국 82개 거점 데이터 Supabase DB에 자동 동기화 시딩
-    try:
-        seed_all_locations_into_db()
-    except Exception as se:
-        print(f"⚠️ [Startup] Auto-seeding failed, utilizing local fallback lists: {se}")
-
-    # 스타트업 시 배치 스케줄러 등록
+    # Weather forecasts are refreshed on demand by coordinate cache entries.
+    # The old nationwide location warmup is deliberately retired.
     scheduler = BackgroundScheduler()
-    # 3시간마다 백그라운드 크론 실행 설정
-    scheduler.add_job(
-        run_weather_collect_batch,
-        'interval',
-        hours=int(os.getenv("WEATHER_BATCH_INTERVAL_HOURS", "3")),
-        id='weather_collect_job',
-        coalesce=True,
-        max_instances=1,
-    )
     scheduler.add_job(run_account_deletion_batch, 'interval', days=1, id='account_deletion_job')
     scheduler.start()
-    print("🚀 Background scheduler started. Weather collect batch registered (every 3 hours).")
-    
-    # A full nationwide warmup is expensive. Enable it only on one designated
-    # worker; normal requests still fetch a missing location on demand.
-    if os.getenv("WEATHER_WARMUP_ON_STARTUP", "false").lower() == "true":
-        import threading
-        threading.Thread(target=run_weather_collect_batch, daemon=True).start()
+    print("🚀 Background scheduler started. Coordinate forecasts refresh on demand.")
     
     yield
     # 셧다운 시 스케줄러 중단
@@ -244,7 +92,7 @@ async def lifespan(app: FastAPI):
     print("🛑 Background scheduler stopped.")
 
 # ─────────────────────────────────────────────
-# 5. FastAPI 앱 초기화
+# 3. FastAPI 앱 초기화
 # ─────────────────────────────────────────────
 app = FastAPI(
     title="Personalized Clothing Recommendation API (PCRS)",
@@ -527,23 +375,13 @@ def compute_clo_from_utci(utci_val: float, gender: str) -> float:
 
 
 async def resolve_forecast_context(latitude: float, longitude: float) -> ForecastContext:
-    """Map a coordinate and load its shared forecast exactly once per request."""
-    locations = get_all_location_coordinates() or SEED_LOCATIONS
-    mapped_location = min(
-        locations,
-        key=lambda location: haversine_distance(
-            latitude,
-            longitude,
-            float(location["latitude"]),
-            float(location["longitude"]),
-        ),
-    )
-    forecast_wrapper = await get_weather_forecast_data(
-        mapped_location["id"],
-        float(mapped_location["latitude"]),
-        float(mapped_location["longitude"]),
-    )
-    return mapped_location, forecast_wrapper
+    """Load one shared forecast directly from the caller's coordinates."""
+    forecast_wrapper = await get_weather_forecast_data(latitude, longitude)
+    return {
+        "cache_key": forecast_wrapper["cache_key"],
+        "latitude": forecast_wrapper["latitude"],
+        "longitude": forecast_wrapper["longitude"],
+    }, forecast_wrapper
 
 
 def build_daily_forecast(hourly_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -582,43 +420,12 @@ def health_check():
 
 @app.get("/api/v1/regions")
 def get_regions():
-    """location_dimension 테이블의 sido/sigungu 목록을 반환합니다."""
-    regions = get_all_locations()
-    grouped: dict = {}
-    for r in regions:
-        sido = r["sido"]
-        sigungu = r["sigungu"]
-        if sido not in grouped:
-            grouped[sido] = []
-        grouped[sido].append(sigungu)
-
-    if not grouped:
-        print("⚠️ Supabase location_dimension is empty. Returning fallback regions.")
-        grouped = {
-            "서울특별시": ["강남구", "서초구", "송파구", "마포구", "종로구", "영등포구"],
-            "경기도": ["수원시", "성남시"]
-        }
-    return {"regions": grouped}
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Region catalog retired. Submit coordinates directly.")
 
 
 @app.get("/api/v1/locations")
 def get_location_catalog(query: str = Query(default="", max_length=80)):
-    """Return selectable forecast locations with coordinates for the client picker."""
-    locations = get_all_location_coordinates() or SEED_LOCATIONS
-    needle = query.strip().lower()
-    catalog = [
-        {
-            "id": str(location.get("id", f"{location['sido']}-{location['sigungu']}")),
-            "name": f"{location['sido']} {location['sigungu']}",
-            "sido": location["sido"],
-            "sigungu": location["sigungu"],
-            "latitude": float(location["latitude"]),
-            "longitude": float(location["longitude"]),
-        }
-        for location in locations
-        if not needle or needle in f"{location['sido']} {location['sigungu']}".lower()
-    ]
-    return {"locations": catalog}
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Location catalog retired. Use current, saved, or map-selected coordinates.")
 
 @app.post("/api/v1/feedback")
 def post_feedback(payload: FeedbackRequest):
@@ -726,7 +533,7 @@ def update_my_profile(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Profile storage is unavailable. Confirm the Phase 1 migration has been applied.",
         )
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "profile": updated}
 
 
@@ -776,7 +583,7 @@ def add_my_wardrobe_item(
     item = create_wardrobe_item(current_user.access_token, current_user.user_id, payload.model_dump())
     if item is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Wardrobe storage is unavailable. Confirm the Phase 3 migration has been applied.")
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "item": item}
 
 
@@ -792,7 +599,7 @@ def update_my_wardrobe_item(
     item = update_wardrobe_item(current_user.access_token, current_user.user_id, item_id, changes)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok", "item": item}
 
 
@@ -803,7 +610,7 @@ def remove_my_wardrobe_item(
 ):
     if not archive_wardrobe_item(current_user.access_token, current_user.user_id, item_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wardrobe item was not found.")
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok"}
 
 
@@ -856,7 +663,7 @@ def add_recommendation_feedback(
     feedback = create_recommendation_feedback(current_user.access_token, current_user.user_id, payload.model_dump(exclude_none=True))
     if feedback is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback storage is unavailable. Confirm the Phase 3 migration has been applied.")
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {
         "status": "ok",
         "feedback": feedback,
@@ -868,7 +675,7 @@ def add_recommendation_feedback(
 def clear_my_recommendation_feedback(current_user: AuthenticatedUser = Depends(require_authenticated_user)):
     if not clear_recommendation_feedback(current_user.access_token, current_user.user_id):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Feedback reset is unavailable.")
-    invalidate_personalized_analysis_cache_for_user(current_user.user_id)
+    invalidate_personalized_coordinate_analysis_cache_for_user(current_user.user_id)
     return {"status": "ok"}
 
 
@@ -921,7 +728,7 @@ async def get_daily_weather_summary(
     mapped_location, forecast_wrapper = await resolve_forecast_context(latitude, longitude)
     hourly_data = forecast_wrapper["hourly_data"]
     return {
-        "location": {"sido": mapped_location["sido"], "sigungu": mapped_location["sigungu"]},
+        "location": {"latitude": mapped_location["latitude"], "longitude": mapped_location["longitude"]},
         "daily": build_daily_forecast(hourly_data),
         "source": forecast_wrapper["source"],
     }
@@ -975,17 +782,11 @@ async def build_recommendation(
     if lang not in ("ko", "en", "ja"):
         lang = "ko"
 
-    # ── 1. 최단거리 거점 매핑 및 예보 캐시 로드 ───────────
+    # ── 1. 요청 좌표 기반 예보 캐시 로드 ───────────
     if forecast_context is None:
         mapped_location, forecast_wrapper = await resolve_forecast_context(lat_user, lon_user)
     else:
         mapped_location, forecast_wrapper = forecast_context
-    min_dist = haversine_distance(
-        lat_user,
-        lon_user,
-        float(mapped_location["latitude"]),
-        float(mapped_location["longitude"]),
-    )
     hourly_data = forecast_wrapper["hourly_data"]
     
     current_time_obj = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
@@ -1243,9 +1044,9 @@ async def build_recommendation(
     return {
         "forecast_time": time_values[hour_idx] if hour_idx < len(time_values) else None,
         "mapped_location": {
-            "sido": mapped_location["sido"],
-            "sigungu": mapped_location["sigungu"],
-            "distance_km": round(min_dist, 2)
+            "latitude": mapped_location["latitude"],
+            "longitude": mapped_location["longitude"],
+            "cache_key": mapped_location["cache_key"],
         },
         "utci": utci_raw,
         "utci_personalized": utci_personalized,
@@ -1313,18 +1114,8 @@ async def get_authenticated_recommendation_with_context(
     # Cache only authenticated results. The weather cache is shared, while this
     # cache is private and keyed by the personal inputs that affect the result.
     if forecast_context is None:
-        locations = get_all_location_coordinates() or SEED_LOCATIONS
-        mapped_location = min(
-            locations,
-            key=lambda location: haversine_distance(
-                payload.latitude,
-                payload.longitude,
-                float(location["latitude"]),
-                float(location["longitude"]),
-            ),
-        )
-    else:
-        mapped_location, _ = forecast_context
+        forecast_context = await resolve_forecast_context(payload.latitude, payload.longitude)
+    mapped_location, _ = forecast_context
     korea_now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
     forecast_date = korea_now.strftime("%Y-%m-%d")
     cache_hour = min(167, max(0, payload.selected_hour if payload.selected_hour is not None else korea_now.hour))
@@ -1332,9 +1123,9 @@ async def get_authenticated_recommendation_with_context(
     profile_fingerprint = hashlib.sha256(
         json.dumps(profile_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    cached_result = get_personalized_analysis_cache(
+    cached_result = get_personalized_coordinate_analysis_cache(
         current_user.user_id,
-        int(mapped_location["id"]),
+        str(mapped_location["cache_key"]),
         forecast_date,
         cache_hour,
         profile_fingerprint,
@@ -1379,9 +1170,9 @@ async def get_authenticated_recommendation_with_context(
         "current_season": current_season,
     }
     result["cache_status"] = "miss"
-    upsert_personalized_analysis_cache(
+    upsert_personalized_coordinate_analysis_cache(
         current_user.user_id,
-        int(mapped_location["id"]),
+        str(mapped_location["cache_key"]),
         forecast_date,
         cache_hour,
         profile_fingerprint,
@@ -1393,7 +1184,7 @@ async def get_authenticated_recommendation_with_context(
 def build_dashboard_response(forecast_context: ForecastContext, recommendation: Dict[str, Any]) -> Dict[str, Any]:
     mapped_location, forecast_wrapper = forecast_context
     return {
-        "location": {"sido": mapped_location["sido"], "sigungu": mapped_location["sigungu"]},
+        "location": {"latitude": mapped_location["latitude"], "longitude": mapped_location["longitude"]},
         "daily": build_daily_forecast(forecast_wrapper["hourly_data"]),
         "recommendation": recommendation,
         "source": forecast_wrapper["source"],

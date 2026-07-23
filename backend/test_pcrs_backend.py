@@ -61,11 +61,10 @@ def test_fastapi_endpoints():
         assert res.json().get("status") == "ok"
         print("    => OK")
 
-        # 2. Regions
-        print("  - Testing GET /api/v1/regions...")
+        # 2. Retired region catalog
+        print("  - Testing retired region catalog...")
         res = client.get("/api/v1/regions")
-        assert res.status_code == 200, f"Expected 200, got {res.status_code}"
-        assert "regions" in res.json()
+        assert res.status_code == 410, f"Expected 410, got {res.status_code}"
         print("    => OK")
 
         # 3. Retired legacy routes are explicitly unavailable.

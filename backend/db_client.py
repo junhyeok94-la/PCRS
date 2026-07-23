@@ -712,6 +712,65 @@ def upsert_weather_forecast_cache(location_id: int, date_str: str, hourly_data: 
     return None
 
 
+COORDINATE_CACHE_DECIMALS = int(os.getenv("COORDINATE_CACHE_DECIMALS", "2"))
+
+
+def normalize_forecast_coordinates(latitude: float, longitude: float) -> tuple[float, float]:
+    """Return the cell centre used to share forecasts for nearby coordinates.
+
+    Two decimal places are roughly a one-kilometre cell, which is smaller than
+    the practical resolution of the upstream forecast while still avoiding a
+    separate provider request for every GPS jitter value.
+    """
+    return round(float(latitude), COORDINATE_CACHE_DECIMALS), round(float(longitude), COORDINATE_CACHE_DECIMALS)
+
+
+def coordinate_cache_key(latitude: float, longitude: float) -> str:
+    normalized_lat, normalized_lon = normalize_forecast_coordinates(latitude, longitude)
+    precision = COORDINATE_CACHE_DECIMALS
+    return f"{normalized_lat:.{precision}f}:{normalized_lon:.{precision}f}"
+
+
+def get_coordinate_weather_forecast_cache(cache_key: str, date_str: str) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_weather_cache_client().table("coordinate_weather_forecast_cache") \
+            .select("*") \
+            .eq("cache_key", cache_key) \
+            .eq("forecast_date", date_str) \
+            .execute()
+        if response.data:
+            return response.data[0]
+    except Exception as exc:
+        print(f"ERROR [coordinate_weather_forecast_cache read]: {exc}")
+    return None
+
+
+def upsert_coordinate_weather_forecast_cache(
+    cache_key: str,
+    latitude: float,
+    longitude: float,
+    date_str: str,
+    hourly_data: Dict[str, Any],
+) -> Optional[Any]:
+    try:
+        response = get_weather_cache_client().table("coordinate_weather_forecast_cache").upsert(
+            {
+                "cache_key": cache_key,
+                "latitude": latitude,
+                "longitude": longitude,
+                "forecast_date": date_str,
+                "hourly_data": hourly_data,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800")))).isoformat(),
+            },
+            on_conflict="cache_key",
+        ).execute()
+        invalidate_personalized_coordinate_analysis_cache_for_key(cache_key)
+        return response.data
+    except Exception as exc:
+        print(f"ERROR [coordinate_weather_forecast_cache upsert]: {exc}")
+    return None
+
+
 def get_personalized_analysis_cache(
     user_id: str,
     location_id: int,
@@ -775,6 +834,72 @@ def invalidate_personalized_analysis_cache_for_user(user_id: str) -> None:
 def invalidate_personalized_analysis_cache_for_location(location_id: int) -> None:
     try:
         get_weather_cache_client().table("personalized_analysis_cache").delete().eq("location_id", location_id).execute()
+    except Exception:
+        pass
+
+
+def get_personalized_coordinate_analysis_cache(
+    user_id: str,
+    cache_key: str,
+    forecast_date: str,
+    selected_hour: int,
+    profile_fingerprint: str,
+) -> Optional[Dict[str, Any]]:
+    try:
+        response = get_weather_cache_client().table("personalized_coordinate_analysis_cache") \
+            .select("result") \
+            .eq("user_id", user_id) \
+            .eq("cache_key", cache_key) \
+            .eq("forecast_date", forecast_date) \
+            .eq("selected_hour", selected_hour) \
+            .eq("profile_fingerprint", profile_fingerprint) \
+            .gt("expires_at", datetime.now(timezone.utc).isoformat()) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            return response.data[0].get("result")
+    except Exception:
+        # This cache is optional while the coordinate-cache migration rolls out.
+        return None
+    return None
+
+
+def upsert_personalized_coordinate_analysis_cache(
+    user_id: str,
+    cache_key: str,
+    forecast_date: str,
+    selected_hour: int,
+    profile_fingerprint: str,
+    result: Dict[str, Any],
+) -> None:
+    try:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(os.getenv("FORECAST_CACHE_TTL_SECONDS", "10800")))
+        get_weather_cache_client().table("personalized_coordinate_analysis_cache").upsert(
+            {
+                "user_id": user_id,
+                "cache_key": cache_key,
+                "forecast_date": forecast_date,
+                "selected_hour": selected_hour,
+                "profile_fingerprint": profile_fingerprint,
+                "result": result,
+                "expires_at": expires_at.isoformat(),
+            },
+            on_conflict="user_id,cache_key,forecast_date,selected_hour,profile_fingerprint",
+        ).execute()
+    except Exception:
+        pass
+
+
+def invalidate_personalized_coordinate_analysis_cache_for_user(user_id: str) -> None:
+    try:
+        get_weather_cache_client().table("personalized_coordinate_analysis_cache").delete().eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
+def invalidate_personalized_coordinate_analysis_cache_for_key(cache_key: str) -> None:
+    try:
+        get_weather_cache_client().table("personalized_coordinate_analysis_cache").delete().eq("cache_key", cache_key).execute()
     except Exception:
         pass
 

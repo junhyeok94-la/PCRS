@@ -38,3 +38,9 @@ Run `008_weather_forecast_cache_server_only.sql`. The backend writes this shared
 ## Personalized analysis cache
 
 Run `009_personalized_analysis_cache.sql` after Phase 1, Phase 3, and the shared weather-cache migration. It adds a server-only cache for authenticated recommendation results and makes `weather_forecast_cache.updated_at` advance on every refresh. Results are invalidated when weather, profile, wardrobe, or feedback data changes.
+
+## Coordinate-first weather cache rollout
+
+Run `010_coordinate_weather_cache.sql` **before** deploying the coordinate-first backend. It creates server-only caches keyed by normalized latitude/longitude, so forecasts no longer require `location_dimension` or the nationwide warmup batch.
+
+Keep the legacy `location_dimension`, `weather_forecast_cache`, and `personalized_analysis_cache` tables during the rollout. After the new cache has served production traffic for at least one cache-retention window and no application version reads the old tables, remove them only through a separately reviewed destructive migration.

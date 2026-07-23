@@ -222,14 +222,13 @@ flowchart LR
   Auth["Supabase Auth\nEmail + OAuth"]
   API["FastAPI\nRecommendation API"]
   DB[("Supabase PostgreSQL\nRLS enabled")]
-  Scheduler["Batch scheduler\nAPScheduler or external cron"]
   Weather["Open-Meteo API"]
 
   Browser -->|"sign in / session"| Auth
   Browser -->|"Bearer JWT + REST"| API
   API -->|"verify JWT / read-write"| DB
-  Scheduler -->|"forecast request"| Weather
-  Scheduler -->|"upsert forecast + UTCI"| DB
+  API -->|"on-demand forecast request"| Weather
+  API -->|"coordinate cache + UTCI"| DB
 ```
 
 ### 6.1 책임 분리
@@ -240,13 +239,13 @@ flowchart LR
 | FastAPI | JWT 검증, 추천 계산, 옷장 조합 점수화, 기상 캐시 조회, 도메인 검증, 감사 로그 |
 | Supabase Auth | 계정, 이메일 인증, OAuth, 비밀번호 재설정, 세션 |
 | Supabase PostgreSQL | 사용자 데이터, 옷장, 피드백, 장소, 기상 캐시, RLS 정책 |
-| Scheduler | 기상 예보 수집, UTCI 사전 계산, 캐시 갱신 |
+| Scheduler | 계정 삭제 유예 처리 등 정기 운영 작업 |
 
 ### 6.2 기상 데이터 전략
 
-- Open-Meteo를 직접 사용자 요청마다 호출하지 않는다.
-- 주요 지역 예보는 1~3시간 주기로 수집하여 `weather_forecast_cache`에 저장한다.
-- GPS 좌표는 Haversine 또는 PostGIS 인덱스로 가까운 캐시 지점을 찾는다.
+- Open-Meteo는 정규화한 좌표 캐시가 없거나 만료된 경우에만 호출한다.
+- 가까운 GPS 좌표는 소수점 둘째 자리 좌표 셀을 공유하며, `coordinate_weather_forecast_cache`에 1~3시간 저장한다.
+- 장소 이름은 표시·저장용이고, 예보 조회와 캐시 키는 위도·경도를 기준으로 한다.
 - 캐시 만료·API 장애 시 마지막 정상 데이터와 갱신 시각을 명시한다.
 - 비정상 위치 또는 캐시 부재 시 제한된 실시간 호출을 하되, 시간 초과와 재시도 정책을 둔다.
 
@@ -264,10 +263,10 @@ flowchart LR
 | recommendation_feedback | 홈 > 추천 체감 피드백 | 추움·좋음·더움 피드백을 저장해 이후 보온 선호를 조금씩 보정한다. |
 | user_locations | 홈 > 장소 선택 시트, 설정 > 즐겨찾는 장소 | 사용자가 저장한 장소 좌표를 보관해 해당 지역 분석을 빠르게 다시 연다. |
 | account_deletion_requests | 설정 > 데이터 및 계정 삭제 | 삭제 요청, 30일 유예 시점, 취소 여부를 관리한다. |
-| location_dimension | 홈 > 장소 선택 시트 | 서비스가 제공하는 공용 분석 지역과 좌표의 기준 목록이다. 개인 정보는 저장하지 않는다. |
-| weather_forecast_cache | 홈, 시간별 활동 탭 | 지역별 Open-Meteo 시간대 예보와 UTCI 결과를 캐시해 빠른 분석과 외부 API 호출 절감에 사용한다. |
+| coordinate_weather_forecast_cache | 홈, 시간별 활동 탭 | 정규화된 위도·경도별 Open-Meteo 시간대 예보와 UTCI 결과를 서버 전용으로 캐시한다. |
+| personalized_coordinate_analysis_cache | 홈, 시간별 활동 탭 | 사용자·좌표 셀·프로필 입력별 추천 결과를 서버 전용으로 캐시한다. |
 
-`006_schema_cleanup_and_table_descriptions.sql`은 위 8개 테이블에 PostgreSQL 설명(`COMMENT ON TABLE`)을 등록하고, 현재 UI/API가 사용하지 않는 `user_profile`, `user_feedback_log`, `historical_weather_fact`를 제거한다.
+`006_schema_cleanup_and_table_descriptions.sql`은 기존 테이블 설명과 레거시 정리를 담당한다. `010_coordinate_weather_cache.sql` 적용 뒤에는 좌표 캐시가 운영 경로를 담당하며, 기존 지역 기반 캐시는 별도 검토 후 제거한다.
 
 ### 7.1 핵심 스키마 예시
 
