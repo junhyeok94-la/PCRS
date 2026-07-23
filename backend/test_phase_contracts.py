@@ -155,8 +155,15 @@ class PhaseContractTests(unittest.TestCase):
         response = self.client.post("/api/v1/recommend", json=payload)
         self.assertEqual(response.status_code, 422)
 
-    @patch("main.get_authenticated_recommendation", new_callable=AsyncMock)
-    def test_recommendation_batch_deduplicates_planned_hours(self, mock_recommendation):
+    @patch("main.get_recommendation_feedback_warmth_bias", return_value=0.0)
+    @patch("main.get_wardrobe_items", return_value=[])
+    @patch("main.resolve_forecast_context", new_callable=AsyncMock)
+    @patch("main.get_authenticated_recommendation_with_context", new_callable=AsyncMock)
+    def test_recommendation_batch_deduplicates_planned_hours(self, mock_recommendation, mock_context, _mock_wardrobe, _mock_bias):
+        mock_context.return_value = (
+            {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962},
+            {"source": "cache", "hourly_data": {}},
+        )
         mock_recommendation.side_effect = [
             {"forecast_time": "2026-07-16T03:00", "utci_personalized": 21.0},
             {"forecast_time": "2026-07-16T05:00", "utci_personalized": 22.0},
@@ -173,6 +180,36 @@ class PhaseContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["selected_hour"] for item in response.json()["recommendations"]], [3, 5])
         self.assertEqual(mock_recommendation.await_count, 2)
+        mock_context.assert_awaited_once()
+
+    @patch("main.build_recommendation", new_callable=AsyncMock)
+    @patch("main.resolve_forecast_context", new_callable=AsyncMock)
+    def test_dashboard_uses_one_shared_forecast_context(self, mock_context, mock_recommendation):
+        mock_context.return_value = (
+            {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962},
+            {"source": "cache", "hourly_data": {
+                "time": ["2026-07-16T00:00"],
+                "temperature_2m": [20.0],
+                "relativehumidity_2m": [60.0],
+                "precipitation_probability": [10.0],
+            }},
+        )
+        mock_recommendation.return_value = {"utci_personalized": 21.0, "recommendations": {"clothing": []}}
+
+        response = self.client.post(
+            "/api/v1/recommend/dashboard",
+            json={
+                "latitude": 37.5,
+                "longitude": 127.0,
+                "profile": {"height": 171, "weight": 60, "age": 30, "gender": "female"},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["daily"][0]["temperature_max"], 20.0)
+        self.assertEqual(response.json()["recommendation"]["utci_personalized"], 21.0)
+        mock_context.assert_awaited_once()
+        mock_recommendation.assert_awaited_once()
 
     @patch("main.get_weather_forecast_data", new_callable=AsyncMock)
     @patch("main.get_all_location_coordinates", return_value=[{"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}])
@@ -251,7 +288,7 @@ class PhaseContractTests(unittest.TestCase):
 
     @patch("main.get_recommendation_feedback_warmth_bias", return_value=1.0)
     @patch("main.get_wardrobe_items", return_value=[{"name": "세탁 중 패딩", "category": "outerwear", "warmth_level": 2, "is_in_laundry": True}, {"name": "보유 패딩", "category": "outerwear", "warmth_level": 2, "is_favorite": True, "is_in_laundry": False}])
-    @patch("main.get_recommendation", new_callable=AsyncMock)
+    @patch("main.build_recommendation", new_callable=AsyncMock)
     def test_authenticated_recommendation_prioritizes_wardrobe(self, mock_recommendation, _mock_wardrobe, _mock_bias):
         mock_recommendation.return_value = {
             "utci_personalized": 4.0,
@@ -272,7 +309,7 @@ class PhaseContractTests(unittest.TestCase):
 
     @patch("main.get_personalized_analysis_cache", return_value={"utci_personalized": 21.5, "recommendations": {"clothing": []}})
     @patch("main.get_all_location_coordinates", return_value=[{"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}])
-    @patch("main.get_recommendation", new_callable=AsyncMock)
+    @patch("main.build_recommendation", new_callable=AsyncMock)
     def test_authenticated_recommendation_uses_valid_personal_cache(self, mock_recommendation, _mock_locations, _mock_cache):
         response = self.client.post(
             "/api/v1/recommendations",

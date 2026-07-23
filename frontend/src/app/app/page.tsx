@@ -77,6 +77,11 @@ interface DailyForecast {
   precipitation_probability_max: number;
 }
 
+interface DashboardPayload {
+  daily: DailyForecast[];
+  recommendation: Recommendation;
+}
+
 interface HourlyForecast {
   time: string;
   temperature: number;
@@ -386,6 +391,19 @@ export default function DashboardPage() {
       return await response.json() as Recommendation;
   }
 
+  async function requestDashboard(targetLocation: SelectedLocation) {
+    const response = await fetch(`${API_BASE_URL}${session ? "/api/v1/recommendations/dashboard" : "/api/v1/recommend/dashboard"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      body: JSON.stringify(recommendationRequestBody(undefined, targetLocation)),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
+      throw new Error(formatApiDetail(payload?.detail, `대시보드 데이터를 불러오지 못했습니다. (${response.status})`));
+    }
+    return await response.json() as DashboardPayload;
+  }
+
   async function requestHourlyBatch(selectedHours: number[], targetLocation: SelectedLocation, plan?: Pick<ActivityPlan, "activity" | "environment">) {
     if (!session) return await Promise.all(selectedHours.map(async (hour) => [hour, await requestRecommendation(hour, targetLocation, plan)] as const));
     const requestBody = recommendationRequestBody(undefined, targetLocation, plan);
@@ -454,20 +472,14 @@ export default function DashboardPage() {
     setBusy(true);
     setRecommendationError(null);
     setDailyForecast([]);
+    setDailyForecastLoading(true);
+    setDailyForecastError(null);
     try {
-      // Show weather-only information first. It is useful without any profile
-      // data and warms the shared forecast cache for the personal analysis.
-      try {
-        await loadDailyForecast(targetLocation);
-      } catch {
-        // The personalized result can still be useful if the optional daily
-        // overview is temporarily unavailable.
-      }
+      const dashboard = await requestDashboard(targetLocation);
       if (!isLatestRequest()) return;
       const hours = getHourlyForecastIndices();
-      const current = await requestRecommendation(undefined, targetLocation);
-      if (!isLatestRequest()) return;
-      setRecommendation(current);
+      setDailyForecast(dashboard.daily);
+      setRecommendation(dashboard.recommendation);
       // The main personalized result is ready. Keep the optional six-hour
       // comparison loading in the background instead of holding the entire
       // dashboard in its loading state.
@@ -477,7 +489,7 @@ export default function DashboardPage() {
       const remainingHours = hours.slice(1);
       const hourlyResults = await Promise.allSettled([requestHourlyBatch(remainingHours, targetLocation)]);
       const batchEntries = hourlyResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-      const entries = [[hours[0], current] as const, ...batchEntries];
+      const entries = [[hours[0], dashboard.recommendation] as const, ...batchEntries];
       if (!isLatestRequest()) return;
       setHourlyRecommendations(Object.fromEntries(entries));
       if (entries.length < hours.length) setRecommendationError("현재 분석은 표시했습니다. 일부 시간대 분석은 잠시 후 다시 시도해 주세요.");
@@ -485,6 +497,7 @@ export default function DashboardPage() {
       if (isLatestRequest()) setRecommendationError(formatError(error, "날씨와 개인화 분석을 불러오지 못했습니다."));
     } finally {
       if (isLatestRequest()) setBusy(false);
+      if (isLatestRequest()) setDailyForecastLoading(false);
     }
   }
 

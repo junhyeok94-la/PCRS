@@ -1,6 +1,7 @@
 import sys
 import os
 import math
+import asyncio
 import datetime
 import json
 import hashlib
@@ -280,6 +281,7 @@ _recommendation_requests: dict[str, deque[float]] = defaultdict(deque)
 _recommendation_rate_lock = threading.Lock()
 RATE_LIMITED_PUBLIC_ROUTES = {
     ("POST", "/api/v1/recommend"),
+    ("POST", "/api/v1/recommend/dashboard"),
     ("GET", "/api/v1/weather/daily"),
     ("GET", "/api/v1/weather/hourly"),
 }
@@ -363,6 +365,12 @@ class RecommendationBatchRequest(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     selected_hours: List[Annotated[int, Field(ge=0, le=167)]] = Field(min_length=1, max_length=23)
     lang: Optional[str] = "ko"
+
+
+# A forecast context is intentionally request-scoped.  It lets the dashboard
+# and the multi-hour planner derive several views from one shared weather-cache
+# read (and prevents duplicate provider calls on a cold cache).
+ForecastContext = tuple[Dict[str, Any], Dict[str, Any]]
 
 
 class Phase1ProfileUpdateRequest(BaseModel):
@@ -516,6 +524,54 @@ def compute_clo_from_utci(utci_val: float, gender: str) -> float:
     if gender == "female":
         base_clo = round(base_clo * 0.92, 2)
     return round(max(0.1, base_clo), 2)
+
+
+async def resolve_forecast_context(latitude: float, longitude: float) -> ForecastContext:
+    """Map a coordinate and load its shared forecast exactly once per request."""
+    locations = get_all_location_coordinates() or SEED_LOCATIONS
+    mapped_location = min(
+        locations,
+        key=lambda location: haversine_distance(
+            latitude,
+            longitude,
+            float(location["latitude"]),
+            float(location["longitude"]),
+        ),
+    )
+    forecast_wrapper = await get_weather_forecast_data(
+        mapped_location["id"],
+        float(mapped_location["latitude"]),
+        float(mapped_location["longitude"]),
+    )
+    return mapped_location, forecast_wrapper
+
+
+def build_daily_forecast(hourly_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Summarize the shared hourly forecast without another data-store read."""
+    daily: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: {
+        "temperatures": [], "humidities": [], "precipitation_probabilities": [],
+    })
+    for index, timestamp in enumerate(hourly_data.get("time", [])):
+        if index >= len(hourly_data.get("temperature_2m", [])):
+            break
+        day = timestamp[:10]
+        daily[day]["temperatures"].append(float(hourly_data["temperature_2m"][index]))
+        if index < len(hourly_data.get("relativehumidity_2m", [])):
+            daily[day]["humidities"].append(float(hourly_data["relativehumidity_2m"][index]))
+        if index < len(hourly_data.get("precipitation_probability", [])):
+            daily[day]["precipitation_probabilities"].append(float(hourly_data["precipitation_probability"][index]))
+
+    return [
+        {
+            "date": day,
+            "temperature_min": round(min(values["temperatures"]), 1),
+            "temperature_max": round(max(values["temperatures"]), 1),
+            "humidity_avg": round(sum(values["humidities"]) / len(values["humidities"])) if values["humidities"] else None,
+            "precipitation_probability_max": round(max(values["precipitation_probabilities"])) if values["precipitation_probabilities"] else 0,
+        }
+        for day, values in sorted(daily.items())[:7]
+        if values["temperatures"]
+    ]
 
 # ─────────────────────────────────────────────
 # 8. API 엔드포인트
@@ -862,49 +918,11 @@ async def get_daily_weather_summary(
     longitude: float = Query(..., ge=-180, le=180),
 ):
     """Return seven daily summaries derived from the shared hourly forecast."""
-    locations = get_all_location_coordinates() or SEED_LOCATIONS
-    mapped_location = min(
-        locations,
-        key=lambda location: haversine_distance(
-            latitude,
-            longitude,
-            float(location["latitude"]),
-            float(location["longitude"]),
-        ),
-    )
-    forecast_wrapper = await get_weather_forecast_data(
-        mapped_location["id"],
-        float(mapped_location["latitude"]),
-        float(mapped_location["longitude"]),
-    )
+    mapped_location, forecast_wrapper = await resolve_forecast_context(latitude, longitude)
     hourly_data = forecast_wrapper["hourly_data"]
-    daily: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: {
-        "temperatures": [], "humidities": [], "precipitation_probabilities": [],
-    })
-    for index, timestamp in enumerate(hourly_data.get("time", [])):
-        if index >= len(hourly_data.get("temperature_2m", [])):
-            break
-        day = timestamp[:10]
-        daily[day]["temperatures"].append(float(hourly_data["temperature_2m"][index]))
-        if index < len(hourly_data.get("relativehumidity_2m", [])):
-            daily[day]["humidities"].append(float(hourly_data["relativehumidity_2m"][index]))
-        if index < len(hourly_data.get("precipitation_probability", [])):
-            daily[day]["precipitation_probabilities"].append(float(hourly_data["precipitation_probability"][index]))
-
-    summaries = [
-        {
-            "date": day,
-            "temperature_min": round(min(values["temperatures"]), 1),
-            "temperature_max": round(max(values["temperatures"]), 1),
-            "humidity_avg": round(sum(values["humidities"]) / len(values["humidities"])) if values["humidities"] else None,
-            "precipitation_probability_max": round(max(values["precipitation_probabilities"])) if values["precipitation_probabilities"] else 0,
-        }
-        for day, values in sorted(daily.items())[:7]
-        if values["temperatures"]
-    ]
     return {
         "location": {"sido": mapped_location["sido"], "sigungu": mapped_location["sigungu"]},
-        "daily": summaries,
+        "daily": build_daily_forecast(hourly_data),
         "source": forecast_wrapper["source"],
     }
 
@@ -916,21 +934,7 @@ async def get_hourly_weather_detail(
     date: Optional[datetime.date] = Query(default=None),
 ):
     """Return a selected day's hourly conditions from the shared forecast cache."""
-    locations = get_all_location_coordinates() or SEED_LOCATIONS
-    mapped_location = min(
-        locations,
-        key=lambda location: haversine_distance(
-            latitude,
-            longitude,
-            float(location["latitude"]),
-            float(location["longitude"]),
-        ),
-    )
-    forecast_wrapper = await get_weather_forecast_data(
-        mapped_location["id"],
-        float(mapped_location["latitude"]),
-        float(mapped_location["longitude"]),
-    )
+    _, forecast_wrapper = await resolve_forecast_context(latitude, longitude)
     hourly_data = forecast_wrapper["hourly_data"]
     target_date = date.isoformat() if date else (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
     entries = []
@@ -953,6 +957,13 @@ async def get_hourly_weather_detail(
 
 @app.post("/api/v1/recommend")
 async def get_recommendation(payload: RecommendationRequest):
+    return await build_recommendation(payload)
+
+
+async def build_recommendation(
+    payload: RecommendationRequest,
+    forecast_context: Optional[ForecastContext] = None,
+):
     """
     Haversine 매핑 및 개인화 넛지 시스템을 갖춘 핵심 추천 API
     """
@@ -964,29 +975,17 @@ async def get_recommendation(payload: RecommendationRequest):
     if lang not in ("ko", "en", "ja"):
         lang = "ko"
 
-    # ── 1. 최단거리 거점 매핑 (Haversine 적용) ───────────
-    locations = get_all_location_coordinates()
-    mapped_location = None
-    min_dist = float('inf')
-    
-    for loc in locations:
-        dist = haversine_distance(lat_user, lon_user, float(loc["latitude"]), float(loc["longitude"]))
-        if dist < min_dist:
-            min_dist = dist
-            mapped_location = loc
-            
-    # 거점 데이터가 DB에 없으면 서울 영등포구를 디폴트로 지정
-    if not mapped_location:
-        print("⚠️ No locations found in DB. Falling back to default (Seoul Yeongdeungpo).")
-        mapped_location = {"id": 6, "sido": "서울특별시", "sigungu": "영등포구", "latitude": 37.5264, "longitude": 126.8962}
-        min_dist = haversine_distance(lat_user, lon_user, 37.5264, 126.8962)
-
-    # ── 2. 해당 거점의 예보 캐시 로드 ──────────────────
-    loc_id = mapped_location["id"]
-    loc_lat = float(mapped_location["latitude"])
-    loc_lon = float(mapped_location["longitude"])
-    
-    forecast_wrapper = await get_weather_forecast_data(loc_id, loc_lat, loc_lon)
+    # ── 1. 최단거리 거점 매핑 및 예보 캐시 로드 ───────────
+    if forecast_context is None:
+        mapped_location, forecast_wrapper = await resolve_forecast_context(lat_user, lon_user)
+    else:
+        mapped_location, forecast_wrapper = forecast_context
+    min_dist = haversine_distance(
+        lat_user,
+        lon_user,
+        float(mapped_location["latitude"]),
+        float(mapped_location["longitude"]),
+    )
     hourly_data = forecast_wrapper["hourly_data"]
     
     current_time_obj = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
@@ -1294,6 +1293,15 @@ async def get_authenticated_recommendation(
     payload: RecommendationRequest,
     current_user: AuthenticatedUser = Depends(require_authenticated_user),
 ):
+    return await get_authenticated_recommendation_with_context(payload, current_user)
+
+
+async def get_authenticated_recommendation_with_context(
+    payload: RecommendationRequest,
+    current_user: AuthenticatedUser,
+    forecast_context: Optional[ForecastContext] = None,
+    personalization_context: Optional[tuple[List[Dict[str, Any]], float]] = None,
+):
     """Return a recommendation that safely prioritizes the member's own wardrobe.
 
     The legacy public endpoint remains available for guests. This authenticated
@@ -1304,16 +1312,19 @@ async def get_authenticated_recommendation(
 
     # Cache only authenticated results. The weather cache is shared, while this
     # cache is private and keyed by the personal inputs that affect the result.
-    locations = get_all_location_coordinates() or SEED_LOCATIONS
-    mapped_location = min(
-        locations,
-        key=lambda location: haversine_distance(
-            payload.latitude,
-            payload.longitude,
-            float(location["latitude"]),
-            float(location["longitude"]),
-        ),
-    )
+    if forecast_context is None:
+        locations = get_all_location_coordinates() or SEED_LOCATIONS
+        mapped_location = min(
+            locations,
+            key=lambda location: haversine_distance(
+                payload.latitude,
+                payload.longitude,
+                float(location["latitude"]),
+                float(location["longitude"]),
+            ),
+        )
+    else:
+        mapped_location, _ = forecast_context
     korea_now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
     forecast_date = korea_now.strftime("%Y-%m-%d")
     cache_hour = min(167, max(0, payload.selected_hour if payload.selected_hour is not None else korea_now.hour))
@@ -1332,9 +1343,14 @@ async def get_authenticated_recommendation(
         cached_result["cache_status"] = "hit"
         return cached_result
 
-    result = await get_recommendation(payload)
-    wardrobe = get_wardrobe_items(current_user.access_token, current_user.user_id)
-    warmth_bias = get_recommendation_feedback_warmth_bias(current_user.access_token, current_user.user_id)
+    result = await build_recommendation(payload, forecast_context=forecast_context)
+    if personalization_context is None:
+        wardrobe, warmth_bias = await asyncio.gather(
+            asyncio.to_thread(get_wardrobe_items, current_user.access_token, current_user.user_id),
+            asyncio.to_thread(get_recommendation_feedback_warmth_bias, current_user.access_token, current_user.user_id),
+        )
+    else:
+        wardrobe, warmth_bias = personalization_context
 
     # Start from weather demand, then make a deliberately small correction from
     # feedback. Positive bias means the member has recently felt cold.
@@ -1374,13 +1390,51 @@ async def get_authenticated_recommendation(
     return result
 
 
+def build_dashboard_response(forecast_context: ForecastContext, recommendation: Dict[str, Any]) -> Dict[str, Any]:
+    mapped_location, forecast_wrapper = forecast_context
+    return {
+        "location": {"sido": mapped_location["sido"], "sigungu": mapped_location["sigungu"]},
+        "daily": build_daily_forecast(forecast_wrapper["hourly_data"]),
+        "recommendation": recommendation,
+        "source": forecast_wrapper["source"],
+    }
+
+
+@app.post("/api/v1/recommend/dashboard")
+async def get_public_dashboard(payload: RecommendationRequest):
+    """Return the initial weather summary and recommendation from one forecast read."""
+    forecast_context = await resolve_forecast_context(payload.latitude, payload.longitude)
+    recommendation = await build_recommendation(payload, forecast_context=forecast_context)
+    return build_dashboard_response(forecast_context, recommendation)
+
+
+@app.post("/api/v1/recommendations/dashboard")
+async def get_authenticated_dashboard(
+    payload: RecommendationRequest,
+    current_user: AuthenticatedUser = Depends(require_authenticated_user),
+):
+    """Authenticated dashboard variant that preserves wardrobe personalization."""
+    forecast_context = await resolve_forecast_context(payload.latitude, payload.longitude)
+    recommendation = await get_authenticated_recommendation_with_context(
+        payload,
+        current_user,
+        forecast_context=forecast_context,
+    )
+    return build_dashboard_response(forecast_context, recommendation)
+
+
 @app.post("/api/v1/recommendations/batch")
 async def get_authenticated_recommendation_batch(
     payload: RecommendationBatchRequest,
     current_user: AuthenticatedUser = Depends(require_authenticated_user),
 ):
-    """Return planned forecast hours in one authenticated request."""
+    """Return planned forecast hours while reusing one forecast and member context."""
     selected_hours = list(dict.fromkeys(payload.selected_hours))
+    forecast_context = await resolve_forecast_context(payload.latitude, payload.longitude)
+    personalization_context = tuple(await asyncio.gather(
+        asyncio.to_thread(get_wardrobe_items, current_user.access_token, current_user.user_id),
+        asyncio.to_thread(get_recommendation_feedback_warmth_bias, current_user.access_token, current_user.user_id),
+    ))
     results = []
     for selected_hour in selected_hours:
         request_payload = RecommendationRequest(
@@ -1390,7 +1444,12 @@ async def get_authenticated_recommendation_batch(
             selected_hour=selected_hour,
             lang=payload.lang,
         )
-        result = await get_authenticated_recommendation(request_payload, current_user)
+        result = await get_authenticated_recommendation_with_context(
+            request_payload,
+            current_user,
+            forecast_context=forecast_context,
+            personalization_context=personalization_context,
+        )
         results.append({"selected_hour": selected_hour, "recommendation": result})
     return {"recommendations": results}
 
