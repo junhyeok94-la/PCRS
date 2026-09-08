@@ -65,3 +65,4 @@ venv.bak/
 
 # Images/temps
 capture_*.png
+.codex-remote-attachments/
