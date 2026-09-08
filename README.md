@@ -2,7 +2,7 @@
 
 개인의 신체 특성, 활동 계획, 실내외 환경과 실제 체감 피드백을 반영해 옷차림과 활동 시간을 추천하는 기상 기반 개인화 서비스입니다.
 
-**Live:** [pcrs-mu.vercel.app](https://pcrs-mu.vercel.app)
+**Live:** [pcrs-git-main-junhyeok-la.vercel.app/app](https://pcrs-git-main-junhyeok-la.vercel.app/app)
 
 ## 주요 기능
 
