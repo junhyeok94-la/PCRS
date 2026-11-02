@@ -1,84 +1,29 @@
-# PCRS
+# Thermal Guide / PCRS
 
-개인의 신체 특성, 활동 계획, 실내외 환경과 실제 체감 피드백을 반영해 옷차림과 활동 시간을 추천하는 기상 기반 개인화 서비스입니다.
+현재 개발 대상은 **Android 네이티브 앱**입니다. Kotlin과 Jetpack Compose로 빈 앱부터 기능을 하나씩 구현합니다.
 
-**Live:** [pcrs-git-main-junhyeok-la.vercel.app/app](https://pcrs-git-main-junhyeok-la.vercel.app/app)
+- [Android 앱 시작하기](android/README.md)
+- [출퇴근·선택 민감도 구현 결과](android/docs/PERSONALIZATION_IMPLEMENTATION_STATUS.md)
+- [출퇴근·설정 실제 검증 화면](android/design/personal-validation/README.md)
+- [날씨 캐시·호출 자원 관리](android/docs/CACHE_IMPLEMENTATION_STATUS.md)
+- [백엔드 자원 사용 원칙](weather_api/DEVELOPMENT_RESOURCE_POLICY.md)
+- [아바타 착장 8종 보기](android/design/avatar-assets-v1/index.html)
+- [지역 기본 의상 추천 구현](android/docs/RECOMMENDATION_IMPLEMENTATION_STATUS.md)
+- [실제 추천 화면](android/design/recommendation/README.md)
+- [실제 날씨 홈 구현 결과](android/docs/HOME_IMPLEMENTATION_STATUS.md)
+- [실제 앱 화면](android/design/implementation/README.md)
+- [제품 개발 기술 검토](android/docs/PRODUCT_TECH_REVIEW.md)
+- [날씨 연동 1단계 결과](android/docs/WEATHER_INTEGRATION_STATUS.md)
+- [독립 날씨 API 실행](weather_api/README.md)
+- [Android 아바타 표시 검증](android/design/validation/README.md)
+- [최신 디자인 검토 모음](android/docs/DESIGN_REVIEW_V0_4.md)
+- [화면 시안 모아 보기](android/design/review.html)
+- [현재 컨셉의 개발 순서](android/docs/DEVELOPMENT_PLAN_V0_4.md)
+- [기능별 개발 순서와 완료 기준](android/docs/DEVELOPMENT_PLAN.md)
+- [앱 구조와 기존 서버 검토](android/docs/ARCHITECTURE.md)
 
-## 주요 기능
+`frontend/`, `backend/`, `batch/`는 이전 웹 구현으로 보관합니다. 새 앱은 독립 `weather_api/`를 통해 기상청 자료를 받고, 이전 웹 서버·Supabase 서비스에는 연결하지 않습니다. 로컬 서버 실행에 기존 Python 가상환경을 개발 도구로 사용하고 있습니다.
 
-- 위치별 실시간·시간대별 기상 정보와 UTCI 기반 체감 분석
-- 활동 강도와 실내외 환경을 반영한 옷차림 추천
-- 사용자가 등록한 옷장을 우선 활용하는 개인화 조합
-- `더웠어요 / 적당했어요 / 추웠어요` 피드백 기반 선호 보정
-- 즐겨찾는 장소, 계정 데이터 내보내기와 삭제 요청
-- 모바일 우선 PWA 인터페이스
+`PROJECT_SPEC.md`와 `BETA_DEPLOYMENT.md`는 이전 웹 버전의 설계·배포 자료입니다. Android 개발 범위와 진행 상태는 위의 앱 문서를 기준으로 합니다.
 
-## 기술 구성
-
-| 영역 | 기술 |
-|---|---|
-| Frontend | Next.js, TypeScript, PWA, Vercel |
-| Backend | FastAPI, Python, Pydantic |
-| Data & Auth | Supabase PostgreSQL, Supabase Auth, RLS |
-| Weather | Open-Meteo, 좌표 기반 예보 캐시 |
-| Recommendation | UTCI, 활동·환경·체감 피드백 기반 규칙 모델 |
-| Operations | Render, GitHub Actions |
-
-## 구조
-
-```text
-PCRS/
-├── frontend/       # Next.js 사용자 인터페이스
-├── backend/        # FastAPI와 추천·기상·계정 API
-├── batch/dags/     # 기상 데이터 수집 작업
-├── PROJECT_SPEC.md # 제품·기술 설계 기준
-└── render.yaml     # 백엔드 배포 설정
-```
-
-## 아키텍처
-
-```mermaid
-flowchart LR
-  UI[Next.js PWA] -->|Supabase session| AUTH[Supabase Auth]
-  UI -->|Bearer JWT| API[FastAPI]
-  API --> DB[(Supabase PostgreSQL)]
-  API --> WEATHER[Open-Meteo]
-  API --> ENGINE[UTCI & Recommendation Engine]
-  ENGINE --> DB
-```
-
-기상 API 호출은 정규화된 좌표 셀 단위로 캐시합니다. 추천 API는 기상 조건, 활동 강도, 사용자 프로필, 옷장과 체감 피드백을 결합해 결과와 근거를 함께 반환합니다. 사용자 데이터 테이블에는 RLS를 적용하고, 서버 전용 키는 백엔드 환경에서만 사용합니다.
-
-## 로컬 실행
-
-### Backend
-
-```bash
-cd backend
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-uvicorn main:app --reload
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm ci
-copy .env.example .env.local
-npm run dev
-```
-
-환경변수 예시 파일에는 실제 인증정보를 입력하지 않습니다. 로컬 값은 Git에서 제외되는 `.env`와 `.env.local`에 설정합니다.
-
-## 문서
-
-- [제품 및 기술 설계](PROJECT_SPEC.md)
-- [베타 배포 안내](BETA_DEPLOYMENT.md)
-- [데이터베이스 마이그레이션](backend/migrations/README.md)
-
-## 상태
-
-현재 베타 버전으로 운영 중이며 추천 정확도, 좌표 기반 기상 캐시와 개인화 기능을 지속해서 개선하고 있습니다.
+이전 웹 버전의 기능·배포 소개는 [보관된 웹 README](docs/WEB_PROJECT_README.md)에서 확인할 수 있습니다.

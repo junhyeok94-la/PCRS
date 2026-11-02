@@ -1,0 +1,9 @@
+{
+  "sourceUrl": "https://www.data.go.kr/data/15084084/openapi.do",
+  "guideVersion": "261019",
+  "sourceSha256": "9dfd7dc2d422318154d3484fb00142afa3c5271fc14d079adf997043a14b86ba",
+  "workbookSha256": "76c1bdae7b5299c81e0582b42d1507775183603072f141ce8d96e6054851b391",
+  "license": "공공누리 제1유형: 출처표시",
+  "transformation": "전국 행정구역 이름·격자·대표 좌표를 CSV로 정규화",
+  "regionCount": 3839
+}

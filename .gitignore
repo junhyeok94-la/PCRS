@@ -63,6 +63,12 @@ venv.bak/
 .env.test.local
 .env.production.local
 
+# Machine-local Codex MCP setup
+.codex/config.toml
+
 # Images/temps
 capture_*.png
 .codex-remote-attachments/
+
+# Downloaded public API guides and local development caches
+weather_api/.cache/

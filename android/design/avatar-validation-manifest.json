@@ -1,0 +1,41 @@
+{
+  "purpose": "debug-only feasibility check, not final production assets",
+  "assets": [
+    {
+      "file": "avatar_validation_jacket.png",
+      "sha256": "0be7828e990fab5766a25199555e4c46d9109e7de41c06edd65737b20804ff6b",
+      "width": 1024,
+      "height": 1536,
+      "bytes": 1523887,
+      "alphaMinMax": [
+        0,
+        254
+      ],
+      "alpha128Bounds": [
+        287,
+        52,
+        730,
+        1463
+      ],
+      "transparentPixelFraction": 0.7254
+    },
+    {
+      "file": "avatar_validation_long.png",
+      "sha256": "cd38d22be64bf088722408fdf212d6cafb18a23c7d5f4aa2a103afe4a3db78ea",
+      "width": 1024,
+      "height": 1536,
+      "bytes": 1505452,
+      "alphaMinMax": [
+        0,
+        254
+      ],
+      "alpha128Bounds": [
+        286,
+        52,
+        725,
+        1462
+      ],
+      "transparentPixelFraction": 0.7303
+    }
+  ]
+}

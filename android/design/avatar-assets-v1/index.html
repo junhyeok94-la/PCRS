@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thermal Guide · 착장 8종</title>
+<style>
+:root{--bg:#eff4f8;--card:#fff;--stage:#e7eff6;--ink:#193a53;--sub:#536f83;--line:#c7d9e7}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,'Malgun Gothic',sans-serif}body.dark{--bg:#142430;--card:#203543;--stage:#182c3a;--ink:#e6f1fa;--sub:#afc9dc;--line:#405e72}main{max-width:1200px;margin:auto;padding:40px 24px}h1{font-size:30px;line-height:1.25;margin:8px 0}p{margin:8px 0;color:var(--sub)}a{color:inherit}nav{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}button{min-height:44px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);padding:8px 20px;font:inherit;cursor:pointer}button[aria-pressed=true]{background:var(--ink);color:var(--bg)}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}article{border-radius:22px;background:var(--card);overflow:hidden}.stage{background:var(--stage);padding:14px 8px 2px;text-align:center}.stage img{display:block;height:300px;max-width:100%;object-fit:contain;margin:auto}.copy{padding:16px}.copy h2{font-size:17px;margin:0 0 5px}.copy p{font-size:13px}.badge{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:2px 8px;font-size:12px;margin-top:6px}.note{padding:20px;background:var(--card);border-radius:18px;margin-top:24px;font-size:14px}@media(max-width:950px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:480px){main{padding:24px 14px}.grid{gap:10px}.stage img{height:240px}.copy{padding:12px}h1{font-size:25px}}
+</style></head><body><main>
+<p>THERMAL GUIDE · ANDROID</p><h1>한 캐릭터, 여덟 가지 기본 차림</h1><p>추천 규칙의 의류 종류·두께·겉옷 상태에 연결한 전신 렌더 이미지입니다.</p>
+<nav aria-label="배경 선택"><button type="button" id="light" aria-pressed="true">밝은 배경</button><button type="button" id="dark" aria-pressed="false">어두운 배경</button><a href="README.md">검증·구현 결과</a><a href="../../docs/RECOMMENDATION_RULES_V0_1.md">추천 기준</a></nav>
+<section class="grid" id="gallery" aria-label="착장 8종"></section>
+<div class="note">기본 외형 1종의 완성 착장 이미지 전환입니다. 자유로운 의류 조합·헤어/체형 꾸미기·실시간 3D는 구현하지 않았습니다. 겉옷을 챙기는 상태에는 벗은 그림을 쓰고 휴대 정보를 별도로 표시합니다. 그림에서 옷의 실제 보온 성능을 계산하지 않습니다.</div>
+</main><script>
+const assets=[
+['얇은 긴팔·얇은 바지','avatar_outfit_thin_light_v1.png','얇은 긴팔 / 얇은 긴바지 / 겉옷 없음','20~23℃ 미만'],
+['반팔·얇은 바지','avatar_outfit_short_light_v1.png','얇은 반팔 / 얇은 긴바지 / 겉옷 없음','23℃ 이상'],
+['긴팔·일반 바지','avatar_preview_long.png','얇은 긴팔 / 긴바지 / 재킷 또는 가디건 챙기기','17~20℃ 미만'],
+['가벼운 재킷','avatar_preview_jacket.png','얇은 긴팔 / 긴바지 / 재킷 입기','12~17℃ 미만'],
+['얇은 가디건','avatar_outfit_cardigan_v1.png','얇은 긴팔 / 긴바지 / 가디건 입기','조건에 맞는 대안'],
+['니트·중간 재킷','avatar_outfit_mid_jacket_v1.png','중간 두께 니트 / 긴바지 / 중간 두께 재킷','9~12℃ 미만'],
+['니트·보온 코트','avatar_outfit_coat_v1.png','중간 두께 니트 / 보온 긴바지 / 보온 코트','5~9℃ 미만'],
+['내의·니트·패딩','avatar_outfit_padded_v1.png','보온 내의+니트 / 보온 긴바지 / 두꺼운 패딩','5℃ 미만']
+];
+assets.forEach(([name,file,description,range])=>{const a=document.createElement('article');const stage=document.createElement('div');stage.className='stage';const img=document.createElement('img');img.src='../../app/src/main/res/drawable-nodpi/'+file;img.alt=description;stage.append(img);const copy=document.createElement('div');copy.className='copy';const h=document.createElement('h2');h.textContent=name;const p=document.createElement('p');p.textContent=description;const b=document.createElement('span');b.className='badge';b.textContent=range;copy.append(h,p,b);a.append(stage,copy);document.getElementById('gallery').append(a)});
+function theme(dark){document.body.classList.toggle('dark',dark);document.getElementById('light').setAttribute('aria-pressed',String(!dark));document.getElementById('dark').setAttribute('aria-pressed',String(dark))}document.getElementById('light').onclick=()=>theme(false);document.getElementById('dark').onclick=()=>theme(true);
+</script></body></html>

@@ -1,0 +1,109 @@
+{
+  "date": "2026-11-02",
+  "tool": "built-in imagegen",
+  "boardCount": 11,
+  "representativeScreenCount": 22,
+  "newBoardCount": 7,
+  "scope": "static design concepts; app implementation unchanged; latest full click flow not validated",
+  "assets": [
+    {
+      "file": "home-toy-v1.png",
+      "title": "개인화 홈",
+      "status": "agreed",
+      "screens": 1,
+      "bytes": 1496731,
+      "width": 821,
+      "height": 1916
+    },
+    {
+      "file": "outfit-alternatives-v2.png",
+      "title": "다른 차림",
+      "status": "agreed",
+      "screens": 1,
+      "bytes": 1414254,
+      "width": 841,
+      "height": 1870
+    },
+    {
+      "file": "feedback-flow-v1.png",
+      "title": "기본·더움 피드백",
+      "status": "agreed",
+      "screens": 2,
+      "bytes": 1535509,
+      "width": 1455,
+      "height": 1081
+    },
+    {
+      "file": "actual-outfit-v1.png",
+      "title": "실제 차림 수정",
+      "status": "agreed",
+      "screens": 1,
+      "bytes": 1331891,
+      "width": 840,
+      "height": 1871
+    },
+    {
+      "file": "onboarding-basic-home-v1.png",
+      "title": "지역 선택·기본 홈",
+      "status": "new",
+      "screens": 2,
+      "bytes": 1506896,
+      "width": 1455,
+      "height": 1081
+    },
+    {
+      "file": "hourly-commute-v1.png",
+      "title": "시간별·출퇴근 설정",
+      "status": "new",
+      "screens": 2,
+      "bytes": 1385294,
+      "width": 1455,
+      "height": 1081
+    },
+    {
+      "file": "settings-sensitivity-alert-v1.png",
+      "title": "설정·민감도·아침 알림",
+      "status": "new",
+      "screens": 3,
+      "bytes": 1504458,
+      "width": 1536,
+      "height": 1024
+    },
+    {
+      "file": "weather-error-stale-v1.png",
+      "title": "조회 실패·이전 예보",
+      "status": "new",
+      "screens": 2,
+      "bytes": 1519156,
+      "width": 1536,
+      "height": 1024
+    },
+    {
+      "file": "feedback-cold-mismatch-saved-v1.png",
+      "title": "추움·예보 불일치·기록 완료",
+      "status": "new",
+      "screens": 3,
+      "bytes": 1433582,
+      "width": 1536,
+      "height": 1024
+    },
+    {
+      "file": "optional-settings-v1.png",
+      "title": "이동 패턴·선택 신체 정보",
+      "status": "new",
+      "screens": 2,
+      "bytes": 1404349,
+      "width": 1536,
+      "height": 1024
+    },
+    {
+      "file": "history-reset-delete-v1.png",
+      "title": "기록 목록·보정 초기화·삭제",
+      "status": "new",
+      "screens": 3,
+      "bytes": 1499151,
+      "width": 1536,
+      "height": 1024
+    }
+  ]
+}

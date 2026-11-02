@@ -1,0 +1,740 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Thermal Guide Weather API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/regions": {
+      "get": {
+        "summary": "Search Regions",
+        "operationId": "search_regions_v1_regions_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 60,
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 30,
+              "minimum": 1,
+              "default": 15,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionSearch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/regions/nearby": {
+      "get": {
+        "summary": "Nearby",
+        "operationId": "nearby_v1_regions_nearby_get",
+        "parameters": [
+          {
+            "name": "latitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 90,
+              "minimum": -90,
+              "title": "Latitude"
+            }
+          },
+          {
+            "name": "longitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 180,
+              "minimum": -180,
+              "title": "Longitude"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NearbyRegion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/weather": {
+      "post": {
+        "summary": "Weather",
+        "operationId": "weather_v1_weather_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeatherRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WeatherEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Amount": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "none",
+              "exact",
+              "less_than",
+              "range",
+              "at_least",
+              "unknown"
+            ],
+            "title": "Kind"
+          },
+          "valueMm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuemm"
+          },
+          "lowerBoundMm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lowerboundmm"
+          },
+          "upperBoundMm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upperboundmm"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "Amount"
+      },
+      "ComponentError": {
+        "properties": {
+          "component": {
+            "type": "string",
+            "enum": [
+              "forecast",
+              "current"
+            ],
+            "title": "Component"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "component",
+          "code"
+        ],
+        "title": "ComponentError"
+      },
+      "DailyTemperatures": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "minimumC": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimumc"
+          },
+          "maximumC": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximumc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date"
+        ],
+        "title": "DailyTemperatures"
+      },
+      "Dataset": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "hourly_forecast",
+              "representative_observation"
+            ],
+            "title": "Kind"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": "kma_data_go_kr"
+          },
+          "issuedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Issuedat"
+          },
+          "fetchedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fetchedat"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expiresat"
+          },
+          "freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale"
+            ],
+            "title": "Freshness",
+            "default": "fresh"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherPoint"
+            },
+            "type": "array",
+            "title": "Points"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/DailyTemperatures"
+            },
+            "type": "array",
+            "title": "Daily"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "issuedAt",
+          "fetchedAt",
+          "expiresAt",
+          "points"
+        ],
+        "title": "Dataset"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LocationWeather": {
+        "properties": {
+          "location": {
+            "$ref": "#/components/schemas/Region"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "forecast": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dataset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dataset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ComponentError"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "location",
+          "status"
+        ],
+        "title": "LocationWeather"
+      },
+      "NearbyRegion": {
+        "properties": {
+          "region": {
+            "$ref": "#/components/schemas/Region"
+          },
+          "matchKind": {
+            "type": "string",
+            "const": "nearest_representative_point",
+            "title": "Matchkind",
+            "default": "nearest_representative_point"
+          },
+          "distanceKm": {
+            "type": "number",
+            "title": "Distancekm"
+          },
+          "requiresConfirmation": {
+            "type": "boolean",
+            "title": "Requiresconfirmation",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "region",
+          "distanceKm"
+        ],
+        "title": "NearbyRegion"
+      },
+      "Region": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "level": {
+            "type": "integer",
+            "title": "Level"
+          },
+          "gridX": {
+            "type": "integer",
+            "title": "Gridx"
+          },
+          "gridY": {
+            "type": "integer",
+            "title": "Gridy"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "level",
+          "gridX",
+          "gridY",
+          "latitude",
+          "longitude"
+        ],
+        "title": "Region"
+      },
+      "RegionSearch": {
+        "properties": {
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/Region"
+            },
+            "type": "array",
+            "title": "Regions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "regions"
+        ],
+        "title": "RegionSearch"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WeatherEnvelope": {
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "title": "Schemaversion",
+            "default": "1.0"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "default": "Asia/Seoul"
+          },
+          "isSample": {
+            "type": "boolean",
+            "title": "Issample",
+            "default": false
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generatedat"
+          },
+          "attribution": {
+            "type": "string",
+            "title": "Attribution",
+            "default": "기상청 단기예보·초단기실황 / 공공누리 제1유형 / 앱 표시용으로 정규화"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/LocationWeather"
+            },
+            "type": "array",
+            "title": "Locations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "locations"
+        ],
+        "title": "WeatherEnvelope"
+      },
+      "WeatherPoint": {
+        "properties": {
+          "validAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Validat"
+          },
+          "temperatureC": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperaturec"
+          },
+          "humidityPercent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Humiditypercent"
+          },
+          "windSpeedMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Windspeedms"
+          },
+          "windDirectionDegrees": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winddirectiondegrees"
+          },
+          "precipitationProbabilityPercent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitationprobabilitypercent"
+          },
+          "precipitationType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitationtype"
+          },
+          "sky": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sky"
+          },
+          "precipitation": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "precipitationPeriodMinutes": {
+            "type": "integer",
+            "title": "Precipitationperiodminutes",
+            "default": 60
+          }
+        },
+        "type": "object",
+        "required": [
+          "validAt",
+          "precipitation"
+        ],
+        "title": "WeatherPoint"
+      },
+      "WeatherRequest": {
+        "properties": {
+          "regionIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 1,
+            "title": "Regionids"
+          },
+          "hours": {
+            "type": "integer",
+            "maximum": 48.0,
+            "minimum": 1.0,
+            "title": "Hours",
+            "default": 36
+          }
+        },
+        "type": "object",
+        "required": [
+          "regionIds"
+        ],
+        "title": "WeatherRequest"
+      }
+    }
+  }
+}

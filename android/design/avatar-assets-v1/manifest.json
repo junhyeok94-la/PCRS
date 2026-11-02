@@ -1,0 +1,176 @@
+{
+  "date": "2026-11-02",
+  "purpose": "eight pre-rendered outfit assets; not runtime 3D or arbitrary clothing combinations",
+  "borderAlphaTolerance": 1,
+  "footBaselineTolerancePx": 2,
+  "assets": [
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_cardigan_v1.png",
+      "sha256": "599df0fa560c91b823f91c13afd96c67406aa5d0aa21c638211f3dfd1c696657",
+      "bytes": 1660286,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 1,
+      "alpha128Bounds": [
+        285,
+        39,
+        733,
+        1463
+      ],
+      "transparentPixelFraction": 0.7175
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_coat_v1.png",
+      "sha256": "0d30b33cc6abcc5c7a4f73ec5e064386e1fc0d7d75920d69ad363944a3d7f9a3",
+      "bytes": 1748079,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 0,
+      "alpha128Bounds": [
+        280,
+        51,
+        740,
+        1464
+      ],
+      "transparentPixelFraction": 0.709
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_mid_jacket_v1.png",
+      "sha256": "cff0a44e20360c3d37ff55d4f3f350ca35f4d536491e40d0f31d393919d51fa2",
+      "bytes": 1564126,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 1,
+      "alpha128Bounds": [
+        284,
+        52,
+        736,
+        1463
+      ],
+      "transparentPixelFraction": 0.721
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_padded_v1.png",
+      "sha256": "a33ba164a61e2f71a03bc5c27fcaf147b9107b804d38c829bbec94fc10141447",
+      "bytes": 1650574,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 0,
+      "alpha128Bounds": [
+        267,
+        51,
+        754,
+        1463
+      ],
+      "transparentPixelFraction": 0.7087
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_short_light_v1.png",
+      "sha256": "94d96b258740b969d30694c7ba77a7861315346f2a95e1850e22d72ee4616a8b",
+      "bytes": 1502046,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 0,
+      "alpha128Bounds": [
+        296,
+        52,
+        719,
+        1463
+      ],
+      "transparentPixelFraction": 0.7359
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_outfit_thin_light_v1.png",
+      "sha256": "a46fa2eceb71b530de3babef9108a287b87b9b8788acfe74c4a8107e67922165",
+      "bytes": 1487377,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 0,
+      "alpha128Bounds": [
+        302,
+        52,
+        718,
+        1463
+      ],
+      "transparentPixelFraction": 0.7356
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_preview_jacket.png",
+      "sha256": "0be7828e990fab5766a25199555e4c46d9109e7de41c06edd65737b20804ff6b",
+      "bytes": 1523887,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 1,
+      "alpha128Bounds": [
+        287,
+        52,
+        730,
+        1463
+      ],
+      "transparentPixelFraction": 0.7254
+    },
+    {
+      "file": "app/src/main/res/drawable-nodpi/avatar_preview_long.png",
+      "sha256": "cd38d22be64bf088722408fdf212d6cafb18a23c7d5f4aa2a103afe4a3db78ea",
+      "bytes": 1505452,
+      "size": [
+        1024,
+        1536
+      ],
+      "alphaExtrema": [
+        0,
+        254
+      ],
+      "borderAlphaMaximum": 1,
+      "alpha128Bounds": [
+        286,
+        52,
+        725,
+        1462
+      ],
+      "transparentPixelFraction": 0.7303
+    }
+  ]
+}

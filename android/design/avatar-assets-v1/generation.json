@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-02",
+  "tool": "built-in image_gen",
+  "intent": "identity-preserve clothing edits",
+  "reference": "avatar_preview_jacket.png",
+  "records": [
+    {
+      "key": "Cardigan",
+      "assetFile": "avatar_outfit_cardigan_v1.png",
+      "generatedFile": "exec-833b4714-812e-48ae-a5e9-1ce0280a039c.png"
+    },
+    {
+      "key": "MidJacket",
+      "assetFile": "avatar_outfit_mid_jacket_v1.png",
+      "generatedFile": "exec-00229b92-b1ce-43f5-b39f-65d858ad06ea.png"
+    },
+    {
+      "key": "Coat",
+      "assetFile": "avatar_outfit_coat_v1.png",
+      "generatedFile": "exec-38499286-8c45-44a7-824e-6d9fa56e6a9e.png"
+    },
+    {
+      "key": "Padded",
+      "assetFile": "avatar_outfit_padded_v1.png",
+      "generatedFile": "exec-50e317e8-4654-4c08-a91e-6496415cadde.png"
+    },
+    {
+      "key": "ThinLight",
+      "assetFile": "avatar_outfit_thin_light_v1.png",
+      "generatedFile": "exec-25463444-7d76-4303-b1b5-3ef11882925d.png"
+    },
+    {
+      "key": "ShortLight",
+      "assetFile": "avatar_outfit_short_light_v1.png",
+      "generatedFile": "exec-60eea958-4c3c-41c1-a074-b17684ecaa23.png"
+    }
+  ]
+}

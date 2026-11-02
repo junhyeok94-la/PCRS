@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/debug_network_security_config">
+        <!-- Explicit adb entry point for the debug-only asset feasibility check. -->
+        <activity
+            android:name=".validation.OutfitAssetValidationActivity"
+            android:exported="true"
+            android:label="개발용 착장 검증" />
+        <activity
+            android:name=".validation.AvatarValidationActivity"
+            android:exported="true"
+            android:label="아바타 제작 검증" />
+    </application>
+</manifest>
