@@ -37,4 +37,12 @@
 
 ## 실행 기록
 
-2026-11-03: Render 대시보드에서 기존 무료 서비스와 Blueprint 연결, 이전 `backend/` 실행 설정과 공개 주소를 확인했다. 로컬 전환 설정을 준비했다. 아직 전환 배포·공개 실제 날씨·HTTPS APK 재설치가 완료되었다고 기록하지 않는다.
+2026-11-03: 설정 변경을 GitHub main의 `28f5173`에 반영했다. 기존 Blueprint가 자동 동기화되어 새 Root/Build/Start 명령이 적용되었고 배포 `dep-dbkmset9fdbs73bptmr0`가 live가 된 것을 Render 연결 도구로 확인했다. 무료 플랜을 유지했다. 공개 HTTPS `/health`는 새 `thermal-guide-weather` 서비스와 schemaVersion 1.0을 반환했다.
+
+초기 `/ready`는 HTTP 503 · `ready=false`였다. 사용자에게 Render 환경에 `KMA_SERVICE_KEY`를 직접 저장하도록 안내했고, 키 값은 읽거나 전송·출력하지 않았다. 이후 사용자 측 수동 배포 `dep-dbkn156k1f9s73deups0`가 live로 전환된 뒤 `/ready` HTTP 200 · `ready=true`를 확인했다. 연결 도구 작업공간은 사용자가 확인한 `준혁's workspace` (`tea-d9c4gmm1a83c73bnnul0`)로 명시한다.
+
+공개 HTTPS에서 실제 날씨 POST를 두 번 호출해 HTTP 200, `isSample=false`, 자료 상태 available, 예보 35시점·실황 1시점, 오류 없음과 두 번째 조회의 예보 `fetchedAt` 재사용을 확인했다. 검증 당시 수신 시각은 2026-11-03 14:28 KST다. 이는 그 시점의 연결·캐시 검사이며 항상 최신 자료가 보장된다는 뜻은 아니다.
+
+HTTPS 주소를 사용하는 Android debug 빌드·테스트 130개·lint 오류 0개(기존 경고 11개)를 확인했다. 설치 파일은 로컬 무시 경로 `android/.gradle/phone-install/thermal-guide-render-debug.apk`에 복사했다. 휴대폰 재연결 후 기존 debug 서명으로 `adb install -r` 업데이트 설치에 성공했다. 앱 자료를 지우거나 가상 체감 기록을 주입하지 않았다.
+
+PC의 로컬 weather_api 서버를 종료하고 포트 8010에 리스너가 없는 것을 확인했다. 폰의 reverse 터널 목록도 비어 있다. 이 상태에서 실제 MainActivity를 열어 14:00 대표 관측과 예보가 표시되는 것을 확인하고 날씨 새로고침을 요청했다. 따라서 앱 연결은 PC 로컬 터널에 의존하지 않는다. 빌드 백그라운드는 종료했다. 모바일 데이터 환경과 무료 서버의 절전 후 장시간 재기동은 아직 실제 폰에서 검증하지 않았으므로 일상 테스트 때 확인한다.
