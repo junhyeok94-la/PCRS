@@ -3,23 +3,15 @@ services:
     name: pcrs-api-beta
     plan: free
     runtime: python
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDir: .
+    buildCommand: pip install -r weather_api/requirements.txt
+    startCommand: uvicorn weather_api.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log --no-proxy-headers
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      - key: SUPABASE_URL
+      - key: KMA_SERVICE_KEY
         sync: false
-      - key: SUPABASE_KEY
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: CORS_ALLOW_ORIGINS
-        sync: false
-      - key: PUBLIC_RECOMMEND_RATE_LIMIT
-        value: "20"
-      - key: RATE_LIMIT_WINDOW_SECONDS
-        value: "60"
-      - key: TRUST_PROXY_HEADERS
-        value: "true"
+      # A conservative per-KST-day cap in this instance's SQLite store.
+      # Free Render restarts discard this counter: this is NOT a durable account quota.
+      - key: KMA_DAILY_REQUEST_LIMIT
+        value: "200"

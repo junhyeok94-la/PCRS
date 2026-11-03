@@ -94,7 +94,9 @@ private class HttpWeatherTransport(private val endpoint: String) : WeatherTransp
         val connection = URI(endpoint.trimEnd('/') + path).toURL().openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = 8_000
-            connection.readTimeout = 25_000
+            // The personal-test HTTPS host can sleep; its first response may take about a minute.
+            // A bounded wait permits cold starts without polling or repeated upstream requests.
+            connection.readTimeout = if (base.scheme == "https") 90_000 else 25_000
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("Accept", "application/json")
             if (body != null) {
